@@ -1,0 +1,18 @@
+# Go 构建与项目产物
+bin/
+dist/
+
+# IDE/编辑器
+.idea/
+.vscode/
+.DS_Store
+
+# 临时与日志
+*.log
+*.out
+*.test
+*.swp
+*.tmp
+
+# 依赖缓存（可选根据需要启用）
+# vendor/

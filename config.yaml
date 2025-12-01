@@ -1,0 +1,23 @@
+clickhouse:
+  host: 127.0.0.1
+  port: 9000
+  user: default
+  password: "ddd"
+  database: default
+  secure: false
+
+kafka:
+  brokers:
+    - 127.0.0.1:9092
+
+sync:
+  rows_per_partition: 1000000
+  batch_size: 10000
+  group_name: ch-sync
+  target_database: ""
+  tables_file: ./tables.yaml
+
+logging:
+  level: info
+  format: console
+  file: ""
