@@ -152,11 +152,36 @@ var kafkaTopicsInfoCmd = &cobra.Command{
 	},
 }
 
+var kafkaTopicMessagesCmd = &cobra.Command{
+	Use:   "topic-messages",
+	Short: "统计主题消息数量",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		topic, _ := cmd.Flags().GetString("topic")
+		if topic == "" {
+			return fmt.Errorf("缺少 --topic")
+		}
+		brokers := brokersList()
+		total, err := kadmin.CountTopicMessages(brokers, topic)
+		if err != nil {
+			return err
+		}
+		printJSON(map[string]any{
+			"command":  "kafka topic-messages",
+			"topic":    topic,
+			"brokers":  brokers,
+			"messages": total,
+		})
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(kafkaCmd)
 	kafkaCmd.AddCommand(kafkaTopicsListCmd)
 	kafkaCmd.AddCommand(kafkaTopicsCountCmd)
 	kafkaCmd.AddCommand(kafkaTopicInfoCmd)
 	kafkaCmd.AddCommand(kafkaTopicsInfoCmd)
+	kafkaCmd.AddCommand(kafkaTopicMessagesCmd)
 	kafkaTopicInfoCmd.Flags().String("topic", "", "主题名称（必填）")
+	kafkaTopicMessagesCmd.Flags().String("topic", "", "主题名称（必填）")
 }

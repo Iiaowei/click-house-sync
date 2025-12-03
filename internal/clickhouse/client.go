@@ -36,7 +36,7 @@ type TableRows struct {
 // CountTableRows 基于 system.parts 估算单表的行数。
 func CountTableRows(db *sql.DB, database string, table string) (uint64, error) {
 	var n uint64
-	err := db.QueryRow("SELECT sum(rows) FROM system.parts WHERE database = ? AND table = ?", database, table).Scan(&n)
+	err := db.QueryRow("SELECT sum(rows) FROM system.parts WHERE database = ? AND table = ? AND active = 1", database, table).Scan(&n)
 	if err != nil {
 		return 0, err
 	}
@@ -45,7 +45,7 @@ func CountTableRows(db *sql.DB, database string, table string) (uint64, error) {
 
 // CountAllTablesRows 返回库内所有表的估算行数。
 func CountAllTablesRows(db *sql.DB, database string) ([]TableRows, error) {
-	rows, err := db.Query("SELECT table, sum(rows) AS rows FROM system.parts WHERE database = ? GROUP BY table ORDER BY table", database)
+	rows, err := db.Query("SELECT table, sum(rows) AS rows FROM system.parts WHERE database = ? AND active = 1 GROUP BY table ORDER BY table", database)
 	if err != nil {
 		return nil, err
 	}
@@ -122,14 +122,19 @@ func CreateKafkaTable(db *sql.DB, database string, table string, brokers []strin
 		ddlCols += fmt.Sprintf("%s %s", quoteIdent(c.Name), c.Type)
 	}
 	name := qualified(database, "kafka_"+table+"_sink")
-	if strings.TrimSpace(autoOffsetReset) == "" {
-		autoOffsetReset = "latest"
+	ddl := ""
+	if strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
+		ddl = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
+	} else {
+		if strings.TrimSpace(autoOffsetReset) == "" {
+			autoOffsetReset = "latest"
+		}
+		ddl = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d, kafka_auto_offset_reset = '%s'", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize, autoOffsetReset)
 	}
-	ddl := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d, kafka_auto_offset_reset = '%s'", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize, autoOffsetReset)
 	_, err = db.Exec(ddl)
 	if err != nil {
 		s := err.Error()
-		if strings.Contains(s, "Unknown setting 'kafka_auto_offset_reset'") {
+		if strings.Contains(s, "Unknown setting 'kafka_auto_offset_reset'") && !strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
 			ddl2 := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
 			if _, e2 := db.Exec(ddl2); e2 == nil {
 				return nil
@@ -155,14 +160,19 @@ func CreateKafkaTableFromSource(db *sql.DB, sourceDatabase string, table string,
 		ddlCols += fmt.Sprintf("%s %s", quoteIdent(c.Name), c.Type)
 	}
 	name := qualified(kafkaDatabase, "kafka_"+table+"_sink")
-	if strings.TrimSpace(autoOffsetReset) == "" {
-		autoOffsetReset = "latest"
+	ddl := ""
+	if strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
+		ddl = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
+	} else {
+		if strings.TrimSpace(autoOffsetReset) == "" {
+			autoOffsetReset = "latest"
+		}
+		ddl = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d, kafka_auto_offset_reset = '%s'", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize, autoOffsetReset)
 	}
-	ddl := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d, kafka_auto_offset_reset = '%s'", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize, autoOffsetReset)
 	_, err = db.Exec(ddl)
 	if err != nil {
 		s := err.Error()
-		if strings.Contains(s, "Unknown setting 'kafka_auto_offset_reset'") {
+		if strings.Contains(s, "Unknown setting 'kafka_auto_offset_reset'") && !strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
 			ddl2 := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
 			if _, e2 := db.Exec(ddl2); e2 == nil {
 				return nil

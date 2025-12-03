@@ -31,6 +31,8 @@ type Sync struct {
 	GroupName        string `mapstructure:"group_name"`
 	TargetDatabase   string `mapstructure:"target_database"`
 	TablesFile       string `mapstructure:"tables_file"`
+	QueueSize        int    `mapstructure:"queue_size"`
+	Writers          int    `mapstructure:"writers"`
 }
 
 // Table 描述单表级的覆盖配置（brokers、批量、游标等）。

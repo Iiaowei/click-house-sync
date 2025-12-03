@@ -51,6 +51,8 @@ var (
 	queryableMV           bool
 	respectTableDB        bool
 	kafkaAutoOffsetReset  string
+	queueSize             int
+	writers               int
 )
 
 // rootCmd 是 ch-sync 的根命令。
@@ -127,7 +129,9 @@ func init() {
 	rootCmd.PersistentFlags().IntVar(&kafkaMaxBlockSize, "kafka-max-block-size", 1048576, "Kafka 引擎表的 kafka_max_block_size 设置")
 	rootCmd.PersistentFlags().BoolVar(&queryableMV, "queryable-mv", false, "创建可查询的物化视图（ENGINE=MergeTree），替代推送型 MV")
 	rootCmd.PersistentFlags().BoolVar(&respectTableDB, "respect-table-db", false, "优先使用 tables.yaml 中每表的 current_database 作为源库（忽略 --ch-database）")
-	rootCmd.PersistentFlags().StringVar(&kafkaAutoOffsetReset, "kafka-auto-offset-reset", "latest", "Kafka 引擎表的 kafka_auto_offset_reset 设置（earliest|latest）")
+	rootCmd.PersistentFlags().StringVar(&kafkaAutoOffsetReset, "kafka-auto-offset-reset", "latest", "Kafka 引擎表的 kafka_auto_offset_reset 设置（earliest|latest|skip）")
+	rootCmd.PersistentFlags().IntVar(&queueSize, "queue-size", 10, "导出读写队列容量（默认 10，队列满则读端等待）")
+	rootCmd.PersistentFlags().IntVar(&writers, "writers", 1, "并行写端 goroutine 数（默认 1）")
 }
 
 func brokersList() []string {
@@ -189,6 +193,12 @@ func applyConfig(cmd *cobra.Command, conf *config.Config) {
 	}
 	if !cmd.Flags().Changed("batch-size") && conf.Sync.BatchSize > 0 {
 		batchSize = conf.Sync.BatchSize
+	}
+	if !cmd.Flags().Changed("queue-size") && conf.Sync.QueueSize > 0 {
+		queueSize = conf.Sync.QueueSize
+	}
+	if !cmd.Flags().Changed("writers") && conf.Sync.Writers > 0 {
+		writers = conf.Sync.Writers
 	}
 	if !cmd.Flags().Changed("group-name") && conf.Sync.GroupName != "" {
 		groupName = conf.Sync.GroupName

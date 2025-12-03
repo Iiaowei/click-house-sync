@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -138,6 +139,44 @@ var exportCmd = &cobra.Command{
 				}
 			}
 		}
+		type exportBatch struct {
+			msgs       []kprod.Message
+			size       int
+			postOffset int
+		}
+		if queueSize <= 0 {
+			queueSize = 10
+		}
+		workCh := make(chan exportBatch, queueSize)
+		var wg sync.WaitGroup
+		errCh := make(chan error, 1)
+		errDone := make(chan struct{})
+		var once sync.Once
+		wc := writers
+		if wc <= 0 {
+			wc = 1
+		}
+		for i := 0; i < wc; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for b := range workCh {
+					if len(b.msgs) == 0 {
+						continue
+					}
+					if err := kprod.WriteBatchWithRetry(ctx, brokers, kafkaTopic, w, b.msgs, 3); err != nil {
+						select {
+						case errCh <- err:
+						default:
+						}
+						once.Do(func() { close(errDone) })
+						return
+					}
+					printJSON(map[string]any{"event": "batch_exported", "database": srcDB, "table": table, "offset": b.postOffset, "size": b.size})
+					time.Sleep(10 * time.Millisecond)
+				}
+			}()
+		}
 		for {
 			base := fmt.Sprintf("SELECT %s FROM %s", joinQuoted(names), qualified(srcDB, table))
 			var where string
@@ -177,6 +216,13 @@ var exportCmd = &cobra.Command{
 			rows, err := db.Query(query)
 			if err != nil {
 				printErrJSON(map[string]any{"query": query, "error": err.Error()})
+				close(workCh)
+				wg.Wait()
+				select {
+				case e := <-errCh:
+					return e
+				default:
+				}
 				return err
 			}
 			n := 0
@@ -189,6 +235,13 @@ var exportCmd = &cobra.Command{
 				}
 				if err := rows.Scan(ptrs...); err != nil {
 					rows.Close()
+					close(workCh)
+					wg.Wait()
+					select {
+					case e := <-errCh:
+						return e
+					default:
+					}
 					return err
 				}
 				if cursorIdx >= 0 {
@@ -219,6 +272,13 @@ var exportCmd = &cobra.Command{
 				msg, err := kprod.MessageFromMap(m, key)
 				if err != nil {
 					rows.Close()
+					close(workCh)
+					wg.Wait()
+					select {
+					case e := <-errCh:
+						return e
+					default:
+					}
 					return err
 				}
 				msgs = append(msgs, msg)
@@ -232,15 +292,26 @@ var exportCmd = &cobra.Command{
 				}
 				break
 			}
-			if err := kprod.WriteBatchWithRetry(ctx, brokers, kafkaTopic, w, msgs, 3); err != nil {
-				return err
+			postOffset := offset
+			if cursorIdx < 0 {
+				postOffset = offset + n
+			}
+			select {
+			case workCh <- exportBatch{msgs: msgs, size: n, postOffset: postOffset}:
+			case <-errDone:
+				break
 			}
 			if cursorIdx < 0 {
 				offset += n
 			}
 			total += n
-			printJSON(map[string]any{"event": "batch_exported", "database": srcDB, "table": table, "offset": offset, "size": n})
-			time.Sleep(10 * time.Millisecond)
+		}
+		close(workCh)
+		wg.Wait()
+		select {
+		case e := <-errCh:
+			return e
+		default:
 		}
 		printJSON(map[string]any{"command": "export", "database": srcDB, "table": table, "topic": kafkaTopic, "total": total})
 		return nil
@@ -299,7 +370,7 @@ func qualified(db string, tbl string) string {
 
 // exportTableToKafka 执行单表的批量导出到 Kafka。
 // 支持稳定的 ORDER BY、消息键以及游标范围分页。
-func exportTableToKafka(db *sql.DB, database string, table string, brokers []string, topic string, bs int, orderBy string, keyColumn string, cursorColumn string, cursorStart string, cursorEnd string) error {
+func exportTableToKafka(db *sql.DB, database string, table string, brokers []string, topic string, bs int, orderBy string, keyColumn string, cursorColumn string, cursorStart string, cursorEnd string, tablesTotal int, tableIndex int, tableRows uint64) error {
 	cols, err := clickhouse.GetColumns(db, database, table)
 	if err != nil {
 		return err
@@ -328,6 +399,48 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 				break
 			}
 		}
+	}
+	type exportBatch struct {
+		msgs       []kprod.Message
+		size       int
+		postOffset int
+	}
+	if queueSize <= 0 {
+		queueSize = 10
+	}
+	workCh := make(chan exportBatch, queueSize)
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+	errDone := make(chan struct{})
+	var once sync.Once
+	wc := writers
+	if wc <= 0 {
+		wc = 1
+	}
+	for i := 0; i < wc; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for b := range workCh {
+				if len(b.msgs) == 0 {
+					continue
+				}
+				if err := kprod.WriteBatchWithRetry(ctx, brokers, topic, w, b.msgs, 3); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					once.Do(func() { close(errDone) })
+					return
+				}
+				var kcount int64
+				if kc, err := kadmin.CountTopicMessages(brokers, topic); err == nil {
+					kcount = kc
+				}
+				printJSON(map[string]any{"event": "batch_exported", "database": database, "table": table, "offset": b.postOffset, "size": b.size, "tables_total": tablesTotal, "table_index": tableIndex, "table_rows_total": tableRows, "kafka_messages": kcount})
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
 	}
 	for {
 		base := fmt.Sprintf("SELECT %s FROM %s", joinQuoted(names), qualified(database, table))
@@ -358,11 +471,23 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 		if o := normalizeOrderBy(effOrder, names); o != "" {
 			base += fmt.Sprintf(" ORDER BY %s", o)
 		}
-		query := fmt.Sprintf("%s LIMIT %d, %d", base, offset, bs)
+		var query string
+		if cursorIdx >= 0 {
+			query = fmt.Sprintf("%s LIMIT %d", base, bs)
+		} else {
+			query = fmt.Sprintf("%s LIMIT %d, %d", base, offset, bs)
+		}
 		printJSON(map[string]any{"event": "export_query", "database": database, "table": table, "query": query})
 		rows, err := db.Query(query)
 		if err != nil {
 			printErrJSON(map[string]any{"query": query, "error": err.Error()})
+			close(workCh)
+			wg.Wait()
+			select {
+			case e := <-errCh:
+				return e
+			default:
+			}
 			return err
 		}
 		n := 0
@@ -375,6 +500,13 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 			}
 			if err := rows.Scan(ptrs...); err != nil {
 				rows.Close()
+				close(workCh)
+				wg.Wait()
+				select {
+				case e := <-errCh:
+					return e
+				default:
+				}
 				return err
 			}
 			if cursorIdx >= 0 {
@@ -410,6 +542,13 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 			msg, err := kprod.MessageFromMap(m, key)
 			if err != nil {
 				rows.Close()
+				close(workCh)
+				wg.Wait()
+				select {
+				case e := <-errCh:
+					return e
+				default:
+				}
 				return err
 			}
 			msgs = append(msgs, msg)
@@ -419,13 +558,24 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 		if n == 0 {
 			break
 		}
-		if err := kprod.WriteBatchWithRetry(ctx, brokers, topic, w, msgs, 3); err != nil {
-			return err
+		postOffset := offset
+		if cursorIdx < 0 {
+			postOffset = offset + n
+			offset += n
 		}
-		offset += n
+		select {
+		case workCh <- exportBatch{msgs: msgs, size: n, postOffset: postOffset}:
+		case <-errDone:
+			break
+		}
 		total += n
-		printJSON(map[string]any{"event": "batch_exported", "database": database, "table": table, "offset": offset, "size": n})
-		time.Sleep(10 * time.Millisecond)
+	}
+	close(workCh)
+	wg.Wait()
+	select {
+	case e := <-errCh:
+		return e
+	default:
 	}
 	printJSON(map[string]any{"event": "export_completed", "database": database, "table": table, "total": total})
 	return nil

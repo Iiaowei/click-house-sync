@@ -67,6 +67,10 @@ var prepareCmd = &cobra.Command{
 			brokers = brokersList()
 		}
 		// 创建 Kafka Topic
+		recreateTopic, _ := cmd.Flags().GetBool("recreate-topic")
+		if recreateTopic {
+			_ = kadmin.DeleteTopic(brokers, kafkaTopic)
+		}
 		if err := kadmin.CreateTopic(brokers, kafkaTopic, p, replicationFactor); err != nil {
 			return err
 		}
@@ -129,4 +133,5 @@ func init() {
 	// 源表名：用于生成 Kafka 表字段，并作为推送 MV 的数据来源
 	prepareCmd.Flags().String("table", "", "源表名（必填）")
 	prepareCmd.Flags().Bool("recreate", false, "删除并重建 Kafka 表与物化视图")
+	prepareCmd.Flags().Bool("recreate-topic", false, "删除并重建 Kafka 主题")
 }

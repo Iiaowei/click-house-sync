@@ -22,6 +22,7 @@ var syncCmd = &cobra.Command{
 		continueOnError, _ := cmd.Flags().GetBool("continue-on-error")
 		fullExport, _ := cmd.Flags().GetBool("full-export")
 		recreate, _ := cmd.Flags().GetBool("recreate")
+		recreateTopic, _ := cmd.Flags().GetBool("recreate-topic")
 		if fullExport {
 			prepareOnly = false
 		}
@@ -62,7 +63,7 @@ var syncCmd = &cobra.Command{
 		}
 		var results []map[string]any
 		dbset := map[string]struct{}{}
-		for _, t := range targetList {
+		for i, t := range targetList {
 			// 决定源/目标库：优先使用表级配置，其次全局参数
 			srcDB := chDatabase
 			if !cmd.Root().PersistentFlags().Changed("ch-database") && t.CurrentDatabase != "" {
@@ -116,6 +117,9 @@ var syncCmd = &cobra.Command{
 				return err
 			}
 			p := clickhouse.PartitionsForRows(n, rowsPer)
+			if recreateTopic {
+				_ = kadmin.DeleteTopic(brokers, topic)
+			}
 			if err := kadmin.CreateTopic(brokers, topic, p, rep); err != nil {
 				results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
 				if continueOnError {
@@ -213,7 +217,7 @@ var syncCmd = &cobra.Command{
 					curEnd = ""
 				}
 				printJSON(map[string]any{"event": "export_start", "database": srcDB, "table": t.Name, "topic": topic})
-				if err := exportTableToKafka(db, srcDB, t.Name, brokers, topic, bsize, ord, keycol, curCol, curStart, curEnd); err != nil {
+				if err := exportTableToKafka(db, srcDB, t.Name, brokers, topic, bsize, ord, keycol, curCol, curStart, curEnd, len(targetList), i+1, n); err != nil {
 					results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
 					if continueOnError {
 						continue
@@ -267,6 +271,7 @@ func init() {
 	// 全量导出：创建资源后，对匹配的所有表执行一次性全量导出到 Kafka
 	syncCmd.Flags().Bool("full-export", false, "创建资源后对所有表执行全量导出到Kafka（覆盖 prepare-only，忽略表级/全局游标过滤）")
 	syncCmd.Flags().Bool("recreate", false, "删除并重建 Kafka 表与物化视图（应用新的 brokers/offset/reset 设置）")
+	syncCmd.Flags().Bool("recreate-topic", false, "按 tables.yaml 重新创建 Kafka 主题（先删除旧主题再创建）")
 }
 
 // splitCSV 将逗号分隔的字符串拆分并去除空格。

@@ -110,6 +110,8 @@ tables:
 
 ```bash
 ./ch-sync prepare --table users
+# 重新创建主题
+./ch-sync prepare --table users --recreate-topic
 ```
 
 - 分批导出到 Kafka
@@ -129,6 +131,8 @@ tables:
 ./ch-sync sync --tables users,orders --prepare-only
 # 或导出：
 ./ch-sync sync --tables users,orders --full-export
+# 重新创建主题（按 tables.yaml 删除并重建 Kafka 主题）
+./ch-sync sync --recreate-topic
 ```
 
 - 生成 `tables.yaml`
@@ -196,6 +200,10 @@ tables:
 - `--queryable-mv` 创建可直接查询的 MergeTree 物化视图（不写入目标表）
 - `--respect-table-db` 优先使用 `tables.yaml` 中的表级 `current_database`
 - JSON 输出可通过 `--json-pretty` 与 `--json-color` 控制美化与高亮
+- `--kafka-auto-offset-reset` 支持 `earliest|latest|skip`；`skip` 表示不在 Kafka 引擎表 SETTINGS 中设置该项（适用于旧版本 ClickHouse）
+ - 并发与队列：
+   - `--queue-size` 配置读写队列容量（默认 10；队列满时读端阻塞）
+   - `--writers` 配置并行写端 goroutine 数（默认 1）
 
 ## 依赖环境
 

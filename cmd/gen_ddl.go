@@ -22,6 +22,7 @@ var genDDLCmd = &cobra.Command{
 		prefix, _ := cmd.Flags().GetString("prefix")
 		suffix, _ := cmd.Flags().GetString("suffix")
 		ddlDB, _ := cmd.Flags().GetString("ddl-database")
+		tablesCSV, _ := cmd.Flags().GetString("tables")
 
 		if output == "" {
 			output = "create_tables.sql"
@@ -59,6 +60,20 @@ var genDDLCmd = &cobra.Command{
 			engines = append(engines, engine)
 		}
 		sort.Strings(names)
+		if strings.TrimSpace(tablesCSV) != "" {
+			want := splitCSVLocal(tablesCSV)
+			set := map[string]struct{}{}
+			for _, w := range want {
+				set[w] = struct{}{}
+			}
+			var filtered []string
+			for _, n := range names {
+				if _, ok := set[n]; ok {
+					filtered = append(filtered, n)
+				}
+			}
+			names = filtered
+		}
 
 		var content []byte
 		// 输出创建数据库语句（可覆盖库名）
@@ -106,4 +121,5 @@ func init() {
 	genDDLCmd.Flags().String("prefix", "", "仅包含指定前缀的表名")
 	genDDLCmd.Flags().String("suffix", "", "仅包含指定后缀的表名")
 	genDDLCmd.Flags().String("ddl-database", "", "覆盖输出 DDL 中的库名（例如将 demo 改写为 mv）")
+	genDDLCmd.Flags().String("tables", "", "仅生成指定表 DDL（逗号分隔）")
 }

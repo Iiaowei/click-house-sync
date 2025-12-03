@@ -115,7 +115,7 @@ var autoCmd = &cobra.Command{
 				curEnd = tconf.CursorEnd
 			}
 		}
-		if err := exportTableToKafka(db, srcDB, table, brokers, kafkaTopic, bs, ord, keycol, curCol, curStart, curEnd); err != nil {
+		if err := exportTableToKafka(db, srcDB, table, brokers, kafkaTopic, bs, ord, keycol, curCol, curStart, curEnd, 1, 1, n); err != nil {
 			return err
 		}
 		// 输出执行结果

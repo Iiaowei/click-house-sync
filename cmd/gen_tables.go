@@ -5,6 +5,7 @@ import (
 	"click-house-sync/internal/clickhouse"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -50,6 +51,9 @@ var genTablesCmd = &cobra.Command{
 		cursorColumn, _ := cmd.Flags().GetString("cursor-column")
 		cursorStart, _ := cmd.Flags().GetString("cursor-start")
 		cursorEnd, _ := cmd.Flags().GetString("cursor-end")
+		includeColumns, _ := cmd.Flags().GetString("include-columns")
+		excludeColumns, _ := cmd.Flags().GetString("exclude-columns")
+		tablesCSV, _ := cmd.Flags().GetString("tables")
 
 		if output == "" {
 			output = "tables.yaml"
@@ -87,6 +91,71 @@ var genTablesCmd = &cobra.Command{
 			names = append(names, name)
 		}
 		sort.Strings(names)
+		if strings.TrimSpace(tablesCSV) != "" {
+			want := splitCSVLocal(tablesCSV)
+			set := map[string]struct{}{}
+			for _, w := range want {
+				set[w] = struct{}{}
+			}
+			var filtered []string
+			for _, n := range names {
+				if _, ok := set[n]; ok {
+					filtered = append(filtered, n)
+				}
+			}
+			names = filtered
+		}
+		if strings.TrimSpace(includeColumns) != "" {
+			required := splitCSVLocal(includeColumns)
+			var filtered []string
+			for _, n := range names {
+				cols, err := clickhouse.GetColumns(db, chDatabase, n)
+				if err != nil {
+					continue
+				}
+				have := map[string]struct{}{}
+				for _, c := range cols {
+					have[c.Name] = struct{}{}
+				}
+				ok := true
+				for _, r := range required {
+					if _, exists := have[r]; !exists {
+						ok = false
+						break
+					}
+				}
+				if ok {
+					filtered = append(filtered, n)
+				}
+			}
+			names = filtered
+		}
+		if strings.TrimSpace(excludeColumns) != "" {
+			excluded := splitCSVLocal(excludeColumns)
+			var filtered []string
+			for _, n := range names {
+				cols, err := clickhouse.GetColumns(db, chDatabase, n)
+				if err != nil {
+					filtered = append(filtered, n)
+					continue
+				}
+				have := map[string]struct{}{}
+				for _, c := range cols {
+					have[c.Name] = struct{}{}
+				}
+				banned := false
+				for _, r := range excluded {
+					if _, exists := have[r]; exists {
+						banned = true
+						break
+					}
+				}
+				if !banned {
+					filtered = append(filtered, n)
+				}
+			}
+			names = filtered
+		}
 		var out genTablesFile
 		for _, n := range names {
 			item := genTableItem{
@@ -139,6 +208,9 @@ func init() {
 	genTablesCmd.Flags().String("cursor-column", "", "默认填充到 tables.yaml 的 cursor_column 字段")
 	genTablesCmd.Flags().String("cursor-start", "", "默认填充到 tables.yaml 的 cursor_start 字段")
 	genTablesCmd.Flags().String("cursor-end", "", "默认填充到 tables.yaml 的 cursor_end 字段")
+	genTablesCmd.Flags().String("include-columns", "", "仅生成包含指定列的表（逗号分隔，全部匹配）")
+	genTablesCmd.Flags().String("exclude-columns", "", "排除包含指定列的表（逗号分隔，任一匹配即排除）")
+	genTablesCmd.Flags().String("tables", "", "仅生成指定表（逗号分隔）")
 }
 
 // hasPrefix 判断 s 是否以 p 为前缀，或 p 为空。
@@ -147,4 +219,21 @@ func hasPrefix(s, p string) bool { return len(p) == 0 || (len(s) >= len(p) && s[
 // hasSuffix 判断 s 是否以 sf 为后缀，或 sf 为空。
 func hasSuffix(s, sf string) bool {
 	return len(sf) == 0 || (len(s) >= len(sf) && s[len(s)-len(sf):] == sf)
+}
+
+// splitCSVLocal 将逗号分隔的字符串拆分并去除空格与空项。
+func splitCSVLocal(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	var out []string
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
