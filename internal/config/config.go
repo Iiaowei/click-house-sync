@@ -86,6 +86,54 @@ func LoadTablesFile(path string) ([]Table, error) {
 	return nil, nil
 }
 
+func UpdateTableCursorStart(path string, tableName string, newCursor string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var wrapper struct {
+		Tables []Table `yaml:"tables" json:"tables"`
+	}
+	if err := yaml.Unmarshal(b, &wrapper); err == nil && len(wrapper.Tables) > 0 {
+		updated := false
+		for i := range wrapper.Tables {
+			if wrapper.Tables[i].Name == tableName {
+				wrapper.Tables[i].CursorStart = strings.TrimSpace(newCursor)
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			return nil
+		}
+		out, err := yaml.Marshal(wrapper)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, out, 0644)
+	}
+	var arr []Table
+	if err := yaml.Unmarshal(b, &arr); err == nil && len(arr) > 0 {
+		updated := false
+		for i := range arr {
+			if arr[i].Name == tableName {
+				arr[i].CursorStart = strings.TrimSpace(newCursor)
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			return nil
+		}
+		out, err := yaml.Marshal(arr)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, out, 0644)
+	}
+	return nil
+}
+
 // Load 读取配置文件并反序列化到 Config。
 func Load(path string) (*Config, error) {
 	vp := viper.New()

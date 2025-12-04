@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 )
@@ -23,6 +24,7 @@ var genDDLCmd = &cobra.Command{
 		suffix, _ := cmd.Flags().GetString("suffix")
 		ddlDB, _ := cmd.Flags().GetString("ddl-database")
 		tablesCSV, _ := cmd.Flags().GetString("tables")
+		forceMergeTree, _ := cmd.Flags().GetBool("merge-tree")
 
 		if output == "" {
 			output = "create_tables.sql"
@@ -92,6 +94,9 @@ var genDDLCmd = &cobra.Command{
 				target := fmt.Sprintf("%s.%s", ddlDB, n)
 				ddl = strings.ReplaceAll(ddl, orig, target)
 			}
+			if forceMergeTree {
+				ddl = ensureMergeTreeDDL(ddl)
+			}
 			content = append(content, []byte(ddl)...)
 			if len(ddl) == 0 || ddl[len(ddl)-1] != ';' {
 				content = append(content, ';')
@@ -122,4 +127,226 @@ func init() {
 	genDDLCmd.Flags().String("suffix", "", "仅包含指定后缀的表名")
 	genDDLCmd.Flags().String("ddl-database", "", "覆盖输出 DDL 中的库名（例如将 demo 改写为 mv）")
 	genDDLCmd.Flags().String("tables", "", "仅生成指定表 DDL（逗号分隔）")
+	genDDLCmd.Flags().Bool("merge-tree", false, "将输出 DDL 的引擎统一改为 MergeTree")
+}
+
+func rewriteEngineToMergeTree(ddl string) string {
+	s := ddl
+	inSingle := false
+	inDouble := false
+	inBacktick := false
+	var prev byte
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\'' && !inDouble && !inBacktick {
+			if !(inSingle && prev == '\\') {
+				inSingle = !inSingle
+			}
+			prev = ch
+			continue
+		}
+		if ch == '"' && !inSingle && !inBacktick {
+			if !(inDouble && prev == '\\') {
+				inDouble = !inDouble
+			}
+			prev = ch
+			continue
+		}
+		if ch == '`' && !inSingle && !inDouble {
+			inBacktick = !inBacktick
+			prev = ch
+			continue
+		}
+		if inSingle || inDouble || inBacktick {
+			prev = ch
+			continue
+		}
+		if i+6 <= len(s) && strings.EqualFold(s[i:i+6], "ENGINE") {
+			j := i + 6
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r') {
+				j++
+			}
+			if j >= len(s) || s[j] != '=' {
+				prev = ch
+				continue
+			}
+			j++
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r') {
+				j++
+			}
+			k := j
+			for k < len(s) {
+				r := rune(s[k])
+				if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_') {
+					break
+				}
+				k++
+			}
+			for k < len(s) && (s[k] == ' ' || s[k] == '\t' || s[k] == '\n' || s[k] == '\r') {
+				k++
+			}
+			if k < len(s) && s[k] == '(' {
+				depth := 0
+				inS := false
+				inD := false
+				esc := false
+				for k < len(s) {
+					c := s[k]
+					if inS {
+						if c == '\\' && !esc {
+							esc = true
+						} else {
+							if c == '\'' && !esc {
+								inS = false
+							}
+							esc = false
+						}
+						k++
+						continue
+					}
+					if inD {
+						if c == '\\' && !esc {
+							esc = true
+						} else {
+							if c == '"' && !esc {
+								inD = false
+							}
+							esc = false
+						}
+						k++
+						continue
+					}
+					if c == '\'' {
+						inS = true
+						k++
+						continue
+					}
+					if c == '"' {
+						inD = true
+						k++
+						continue
+					}
+					if c == '(' {
+						depth++
+						k++
+						continue
+					}
+					if c == ')' {
+						depth--
+						k++
+						if depth == 0 {
+							break
+						}
+						continue
+					}
+					k++
+				}
+			}
+			prefix := s[:i]
+			suffix := s[k:]
+			return prefix + "ENGINE = MergeTree()" + suffix
+		}
+		prev = ch
+	}
+	return s
+}
+
+func containsOrderBy(ddl string) bool {
+	s := ddl
+	inSingle := false
+	inDouble := false
+	inBacktick := false
+	var prev byte
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\'' && !inDouble && !inBacktick {
+			if !(inSingle && prev == '\\') {
+				inSingle = !inSingle
+			}
+			prev = ch
+			continue
+		}
+		if ch == '"' && !inSingle && !inBacktick {
+			if !(inDouble && prev == '\\') {
+				inDouble = !inDouble
+			}
+			prev = ch
+			continue
+		}
+		if ch == '`' && !inSingle && !inDouble {
+			inBacktick = !inBacktick
+			prev = ch
+			continue
+		}
+		if inSingle || inDouble || inBacktick {
+			prev = ch
+			continue
+		}
+		if i+5 <= len(s) && strings.EqualFold(s[i:i+5], "ORDER") {
+			j := i + 5
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r') {
+				j++
+			}
+			if j+2 <= len(s) && strings.EqualFold(s[j:j+2], "BY") {
+				return true
+			}
+		}
+		prev = ch
+	}
+	return false
+}
+
+func indexOfSettings(ddl string) int {
+	s := ddl
+	inSingle := false
+	inDouble := false
+	inBacktick := false
+	var prev byte
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\'' && !inDouble && !inBacktick {
+			if !(inSingle && prev == '\\') {
+				inSingle = !inSingle
+			}
+			prev = ch
+			continue
+		}
+		if ch == '"' && !inSingle && !inBacktick {
+			if !(inDouble && prev == '\\') {
+				inDouble = !inDouble
+			}
+			prev = ch
+			continue
+		}
+		if ch == '`' && !inSingle && !inDouble {
+			inBacktick = !inBacktick
+			prev = ch
+			continue
+		}
+		if inSingle || inDouble || inBacktick {
+			prev = ch
+			continue
+		}
+		if i+8 <= len(s) && strings.EqualFold(s[i:i+8], "SETTINGS") {
+			return i
+		}
+		prev = ch
+	}
+	return -1
+}
+
+func ensureMergeTreeDDL(ddl string) string {
+	s := rewriteEngineToMergeTree(ddl)
+	if containsOrderBy(s) {
+		return s
+	}
+	idx := indexOfSettings(s)
+	if idx >= 0 {
+		return s[:idx] + " ORDER BY tuple() " + s[idx:]
+	}
+	t := strings.TrimSpace(s)
+	if len(t) > 0 && t[len(t)-1] == ';' {
+		return strings.TrimSpace(t[:len(t)-1]) + " ORDER BY tuple();"
+	}
+	return s + " ORDER BY tuple()"
 }

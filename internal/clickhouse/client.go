@@ -133,8 +133,7 @@ func CreateKafkaTable(db *sql.DB, database string, table string, brokers []strin
 	}
 	_, err = db.Exec(ddl)
 	if err != nil {
-		s := err.Error()
-		if strings.Contains(s, "Unknown setting 'kafka_auto_offset_reset'") && !strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
+		if isUnknownKafkaAutoOffsetResetError(err) && !strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
 			ddl2 := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
 			if _, e2 := db.Exec(ddl2); e2 == nil {
 				return nil
@@ -171,8 +170,7 @@ func CreateKafkaTableFromSource(db *sql.DB, sourceDatabase string, table string,
 	}
 	_, err = db.Exec(ddl)
 	if err != nil {
-		s := err.Error()
-		if strings.Contains(s, "Unknown setting 'kafka_auto_offset_reset'") && !strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
+		if isUnknownKafkaAutoOffsetResetError(err) && !strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
 			ddl2 := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
 			if _, e2 := db.Exec(ddl2); e2 == nil {
 				return nil
@@ -182,6 +180,14 @@ func CreateKafkaTableFromSource(db *sql.DB, sourceDatabase string, table string,
 		return fmt.Errorf("ddl_failed: %s ; error: %v", ddl, err)
 	}
 	return nil
+}
+
+func isUnknownKafkaAutoOffsetResetError(err error) bool {
+	s := strings.ToLower(err.Error())
+	if !strings.Contains(s, "unknown setting") {
+		return false
+	}
+	return strings.Contains(s, "kafka_auto_offset_reset")
 }
 
 // CreateMaterializedView 通过物化视图将 Kafka 表写入目标 MergeTree 表。

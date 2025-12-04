@@ -3,13 +3,18 @@ package cmd
 
 import (
 	"click-house-sync/internal/clickhouse"
+	"click-house-sync/internal/config"
 	kadmin "click-house-sync/internal/kafka"
 	kprod "click-house-sync/internal/kafka"
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -143,6 +148,7 @@ var exportCmd = &cobra.Command{
 			msgs       []kprod.Message
 			size       int
 			postOffset int
+			endCursor  any
 		}
 		if queueSize <= 0 {
 			queueSize = 10
@@ -152,6 +158,19 @@ var exportCmd = &cobra.Command{
 		errCh := make(chan error, 1)
 		errDone := make(chan struct{})
 		var once sync.Once
+		var stop atomic.Bool
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			for range sigCh {
+				if lastCursor != nil && strings.TrimSpace(tablesFile) != "" && strings.TrimSpace(curCol) != "" {
+					s := toCursorString(lastCursor)
+					_ = config.UpdateTableCursorStart(tablesFile, table, s)
+				}
+				stop.Store(true)
+				once.Do(func() { close(errDone) })
+			}
+		}()
 		wc := writers
 		if wc <= 0 {
 			wc = 1
@@ -173,11 +192,22 @@ var exportCmd = &cobra.Command{
 						return
 					}
 					printJSON(map[string]any{"event": "batch_exported", "database": srcDB, "table": table, "offset": b.postOffset, "size": b.size})
+					if b.endCursor != nil && strings.TrimSpace(tablesFile) != "" && strings.TrimSpace(curCol) != "" {
+						s := toCursorString(b.endCursor)
+						if err := config.UpdateTableCursorStart(tablesFile, table, s); err != nil {
+							printErrJSON(map[string]any{"event": "update_cursor_failed", "file": tablesFile, "table": table, "cursor_start": s, "error": err.Error()})
+						} else {
+							printJSON(map[string]any{"event": "cursor_updated", "file": tablesFile, "table": table, "cursor_start": s})
+						}
+					}
 					time.Sleep(10 * time.Millisecond)
 				}
 			}()
 		}
 		for {
+			if stop.Load() {
+				break
+			}
 			base := fmt.Sprintf("SELECT %s FROM %s", joinQuoted(names), qualified(srcDB, table))
 			var where string
 			if cursorIdx >= 0 {
@@ -296,13 +326,20 @@ var exportCmd = &cobra.Command{
 			if cursorIdx < 0 {
 				postOffset = offset + n
 			}
+			var endC any
+			if cursorIdx >= 0 {
+				endC = lastCursor
+			}
 			select {
-			case workCh <- exportBatch{msgs: msgs, size: n, postOffset: postOffset}:
+			case workCh <- exportBatch{msgs: msgs, size: n, postOffset: postOffset, endCursor: endC}:
 			case <-errDone:
 				break
 			}
 			if cursorIdx < 0 {
 				offset += n
+			}
+			if stop.Load() {
+				break
 			}
 			total += n
 		}
@@ -312,6 +349,14 @@ var exportCmd = &cobra.Command{
 		case e := <-errCh:
 			return e
 		default:
+		}
+		if lastCursor != nil && strings.TrimSpace(tablesFile) != "" && strings.TrimSpace(curCol) != "" {
+			s := toCursorString(lastCursor)
+			if err := config.UpdateTableCursorStart(tablesFile, table, s); err != nil {
+				printErrJSON(map[string]any{"event": "update_cursor_failed", "file": tablesFile, "table": table, "cursor_start": s, "error": err.Error()})
+			} else {
+				printJSON(map[string]any{"event": "cursor_updated", "file": tablesFile, "table": table, "cursor_start": s})
+			}
 		}
 		printJSON(map[string]any{"command": "export", "database": srcDB, "table": table, "topic": kafkaTopic, "total": total})
 		return nil
@@ -404,6 +449,7 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 		msgs       []kprod.Message
 		size       int
 		postOffset int
+		endCursor  any
 	}
 	if queueSize <= 0 {
 		queueSize = 10
@@ -413,6 +459,19 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 	errCh := make(chan error, 1)
 	errDone := make(chan struct{})
 	var once sync.Once
+	var stop atomic.Bool
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		for range sigCh {
+			if lastCursor != nil && strings.TrimSpace(tablesFile) != "" && strings.TrimSpace(cursorColumn) != "" {
+				s := toCursorString(lastCursor)
+				_ = config.UpdateTableCursorStart(tablesFile, table, s)
+			}
+			stop.Store(true)
+			once.Do(func() { close(errDone) })
+		}
+	}()
 	wc := writers
 	if wc <= 0 {
 		wc = 1
@@ -438,11 +497,22 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 					kcount = kc
 				}
 				printJSON(map[string]any{"event": "batch_exported", "database": database, "table": table, "offset": b.postOffset, "size": b.size, "tables_total": tablesTotal, "table_index": tableIndex, "table_rows_total": tableRows, "kafka_messages": kcount})
+				if b.endCursor != nil && strings.TrimSpace(tablesFile) != "" {
+					s := toCursorString(b.endCursor)
+					if err := config.UpdateTableCursorStart(tablesFile, table, s); err != nil {
+						printErrJSON(map[string]any{"event": "update_cursor_failed", "file": tablesFile, "table": table, "cursor_start": s, "error": err.Error()})
+					} else {
+						printJSON(map[string]any{"event": "cursor_updated", "file": tablesFile, "table": table, "cursor_start": s})
+					}
+				}
 				time.Sleep(10 * time.Millisecond)
 			}
 		}()
 	}
 	for {
+		if stop.Load() {
+			break
+		}
 		base := fmt.Sprintf("SELECT %s FROM %s", joinQuoted(names), qualified(database, table))
 		var where string
 		if cursorIdx >= 0 {
@@ -563,9 +633,16 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 			postOffset = offset + n
 			offset += n
 		}
+		var endC any
+		if cursorIdx >= 0 {
+			endC = lastCursor
+		}
 		select {
-		case workCh <- exportBatch{msgs: msgs, size: n, postOffset: postOffset}:
+		case workCh <- exportBatch{msgs: msgs, size: n, postOffset: postOffset, endCursor: endC}:
 		case <-errDone:
+			break
+		}
+		if stop.Load() {
 			break
 		}
 		total += n
@@ -576,6 +653,14 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 	case e := <-errCh:
 		return e
 	default:
+	}
+	if lastCursor != nil && strings.TrimSpace(tablesFile) != "" && strings.TrimSpace(cursorColumn) != "" {
+		s := toCursorString(lastCursor)
+		if err := config.UpdateTableCursorStart(tablesFile, table, s); err != nil {
+			printErrJSON(map[string]any{"event": "update_cursor_failed", "file": tablesFile, "table": table, "cursor_start": s, "error": err.Error()})
+		} else {
+			printJSON(map[string]any{"event": "cursor_updated", "file": tablesFile, "table": table, "cursor_start": s})
+		}
 	}
 	printJSON(map[string]any{"event": "export_completed", "database": database, "table": table, "total": total})
 	return nil
@@ -589,6 +674,19 @@ func sqlLiteral(v any) string {
 		return "'" + strings.ReplaceAll(t, "'", "''") + "'"
 	case time.Time:
 		return "'" + t.Format("2006-01-02 15:04:05") + "'"
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+func toCursorString(v any) string {
+	switch t := v.(type) {
+	case []byte:
+		return string(t)
+	case string:
+		return t
+	case time.Time:
+		return t.Format("2006-01-02 15:04:05")
 	default:
 		return fmt.Sprint(v)
 	}
