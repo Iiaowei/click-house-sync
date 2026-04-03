@@ -48,6 +48,14 @@ var prepareCmd = &cobra.Command{
 				targetDatabase = chDatabase
 			}
 		}
+		tgtTable := targetTable
+		if strings.TrimSpace(tgtTable) == "" {
+			if tconf != nil && strings.TrimSpace(tconf.TargetTable) != "" {
+				tgtTable = tconf.TargetTable
+			} else {
+				tgtTable = table
+			}
+		}
 		// 估算分区数：根据表行数与 rows_per_partition 折算
 		n, err := clickhouse.CountTableRows(db, srcDB, table)
 		if err != nil {
@@ -91,8 +99,20 @@ var prepareCmd = &cobra.Command{
 		if err := clickhouse.CreateKafkaTableFromSource(db, srcDB, table, kafkaDB, brokers, kafkaTopic, group, "JSONEachRow", 1, kafkaMaxBlockSize, kafkaAutoOffsetReset); err != nil {
 			return err
 		}
+		if err := clickhouse.CreateTargetTableLikeSource(db, srcDB, table, targetDatabase, tgtTable, "tuple()", ""); err != nil {
+			return err
+		}
+		sourceCols, err := clickhouse.GetColumns(db, srcDB, table)
+		if err != nil {
+			return err
+		}
+		targetCols, err := clickhouse.GetColumns(db, targetDatabase, tgtTable)
+		if err != nil {
+			return err
+		}
+		typeDiffs := clickhouse.AnalyzeTypeDiff(sourceCols, targetCols)
 		if queryableMV {
-			if err := clickhouse.CreateMaterializedViewOwn(db, kafkaDB, table, targetDatabase); err != nil {
+			if err := clickhouse.CreateMaterializedViewOwn(db, kafkaDB, srcDB, table, targetDatabase); err != nil {
 				return err
 			}
 			printJSON(map[string]any{
@@ -105,23 +125,27 @@ var prepareCmd = &cobra.Command{
 				"group":              group,
 				"kafka_table":        strings.Join([]string{kafkaDB, "kafka_" + table + "_sink"}, "."),
 				"materialized_view":  strings.Join([]string{targetDatabase, "mv_from_kafka_" + table}, "."),
+				"target_table":       strings.Join([]string{targetDatabase, tgtTable}, "."),
+				"type_diffs":         typeDiffs,
 				"source":             strings.Join([]string{srcDB, table}, "."),
 			})
 		} else {
-			if err := clickhouse.CreateMaterializedViewToKafka(db, srcDB, table, kafkaDB); err != nil {
+			if err := clickhouse.CreateMaterializedView(db, kafkaDB, table, targetDatabase, tgtTable); err != nil {
 				return err
 			}
 			printJSON(map[string]any{
-				"command":                    "prepare",
-				"database":                   srcDB,
-				"table":                      table,
-				"topic":                      kafkaTopic,
-				"partitions":                 p,
-				"replication_factor":         replicationFactor,
-				"group":                      group,
-				"kafka_table":                strings.Join([]string{kafkaDB, "kafka_" + table + "_sink"}, "."),
-				"materialized_view_to_kafka": strings.Join([]string{kafkaDB, "mv_to_kafka_" + table}, "."),
-				"source":                     strings.Join([]string{srcDB, table}, "."),
+				"command":            "prepare",
+				"database":           srcDB,
+				"table":              table,
+				"topic":              kafkaTopic,
+				"partitions":         p,
+				"replication_factor": replicationFactor,
+				"group":              group,
+				"kafka_table":        strings.Join([]string{kafkaDB, "kafka_" + table + "_sink"}, "."),
+				"materialized_view":  strings.Join([]string{targetDatabase, "mv_from_kafka_" + table}, "."),
+				"target_table":       strings.Join([]string{targetDatabase, tgtTable}, "."),
+				"type_diffs":         typeDiffs,
+				"source":             strings.Join([]string{srcDB, table}, "."),
 			})
 		}
 		return nil

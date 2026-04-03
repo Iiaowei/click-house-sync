@@ -1,0 +1,23 @@
+clickhouse:
+  host: ck-source
+  port: 9000
+  user: default
+  password: ""
+  database: demo
+  secure: false
+
+kafka:
+  brokers:
+    - kafka:9092
+
+sync:
+  rows_per_partition: 1000000
+  batch_size: 10000
+  group_name: ch-sync
+  target_database: demo
+  tables_file: /workspace/out/tables.yaml
+
+logging:
+  level: info
+  format: console
+  file: ""

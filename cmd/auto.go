@@ -48,6 +48,14 @@ var autoCmd = &cobra.Command{
 				targetDatabase = chDatabase
 			}
 		}
+		tgtTable := targetTable
+		if strings.TrimSpace(tgtTable) == "" {
+			if tconf != nil && strings.TrimSpace(tconf.TargetTable) != "" {
+				tgtTable = tconf.TargetTable
+			} else {
+				tgtTable = table
+			}
+		}
 		// 估算分区并创建 Topic
 		n, err := clickhouse.CountTableRows(db, srcDB, table)
 		if err != nil {
@@ -85,9 +93,21 @@ var autoCmd = &cobra.Command{
 		if err := clickhouse.CreateKafkaTableFromSource(db, srcDB, table, kafkaDB, brokers, kafkaTopic, group, "JSONEachRow", 1, kafkaMaxBlockSize, kafkaAutoOffsetReset); err != nil {
 			return err
 		}
-		if err := clickhouse.CreateMaterializedViewToKafka(db, srcDB, table, kafkaDB); err != nil {
+		if err := clickhouse.CreateTargetTableLikeSource(db, srcDB, table, targetDatabase, tgtTable, "tuple()", ""); err != nil {
 			return err
 		}
+		if err := clickhouse.CreateMaterializedView(db, kafkaDB, table, targetDatabase, tgtTable); err != nil {
+			return err
+		}
+		sourceCols, err := clickhouse.GetColumns(db, srcDB, table)
+		if err != nil {
+			return err
+		}
+		targetCols, err := clickhouse.GetColumns(db, targetDatabase, tgtTable)
+		if err != nil {
+			return err
+		}
+		typeDiffs := clickhouse.AnalyzeTypeDiff(sourceCols, targetCols)
 		// 回补历史数据：导出到 Kafka（可按游标/排序/键配置）
 		bs := batchSize
 		if tconf != nil && tconf.BatchSize > 0 {
@@ -120,16 +140,18 @@ var autoCmd = &cobra.Command{
 		}
 		// 输出执行结果
 		printJSON(map[string]any{
-			"command":                    "auto",
-			"database":                   srcDB,
-			"table":                      table,
-			"topic":                      kafkaTopic,
-			"partitions":                 p,
-			"replication_factor":         replicationFactor,
-			"group":                      group,
-			"kafka_table":                strings.Join([]string{kafkaDB, "kafka_" + table + "_sink"}, "."),
-			"materialized_view_to_kafka": strings.Join([]string{kafkaDB, "mv_to_kafka_" + table}, "."),
-			"source":                     strings.Join([]string{srcDB, table}, "."),
+			"command":           "auto",
+			"database":          srcDB,
+			"table":             table,
+			"topic":             kafkaTopic,
+			"partitions":        p,
+			"replication_factor": replicationFactor,
+			"group":             group,
+			"kafka_table":       strings.Join([]string{kafkaDB, "kafka_" + table + "_sink"}, "."),
+			"materialized_view": strings.Join([]string{targetDatabase, "mv_from_kafka_" + table}, "."),
+			"target_table":      strings.Join([]string{targetDatabase, tgtTable}, "."),
+			"type_diffs":        typeDiffs,
+			"source":            strings.Join([]string{srcDB, table}, "."),
 		})
 		return nil
 	},

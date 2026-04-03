@@ -3,6 +3,7 @@ package cmd
 import (
 	"click-house-sync/internal/clickhouse"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -14,6 +15,7 @@ var countCmd = &cobra.Command{
 		table, _ := cmd.Flags().GetString("table")
 		withMV, _ := cmd.Flags().GetBool("with-mv")
 		diff, _ := cmd.Flags().GetBool("diff")
+		qualitySQL, _ := cmd.Flags().GetBool("quality-sql")
 		conn, err := clickhouse.Connect(chHost, chPort, chUser, chPassword, chDatabase, chSecure)
 		if err != nil {
 			return err
@@ -33,6 +35,7 @@ var countCmd = &cobra.Command{
 			}
 			out := map[string]any{"command": "count", "database": srcDB, "table": table, "rows": n}
 			tgtDB := chDatabase
+			tgtTable := table
 			if cmd.Root().PersistentFlags().Changed("target-database") && targetDatabase != "" {
 				tgtDB = targetDatabase
 			} else {
@@ -40,9 +43,16 @@ var countCmd = &cobra.Command{
 				if tconf != nil && tconf.TargetDatabase != "" {
 					tgtDB = tconf.TargetDatabase
 				}
+				if tconf != nil && strings.TrimSpace(tconf.TargetTable) != "" && strings.TrimSpace(targetTable) == "" {
+					tgtTable = tconf.TargetTable
+				}
+			}
+			if strings.TrimSpace(targetTable) != "" {
+				tgtTable = targetTable
 			}
 			mvName := "mv_from_kafka_" + table
 			out["materialized_view"] = tgtDB + "." + mvName
+			out["target_table"] = tgtDB + "." + tgtTable
 			var mvRows uint64
 			var mvErr error
 			if eng, e1 := clickhouse.GetTableEngine(conn, tgtDB, mvName); e1 == nil && eng == "MaterializedView" {
@@ -61,6 +71,13 @@ var countCmd = &cobra.Command{
 				out["mv_error"] = mvErr.Error()
 			} else {
 				out["mv_rows"] = mvRows
+			}
+			if qualitySQL {
+				tgtCols, err := clickhouse.GetColumns(conn, tgtDB, tgtTable)
+				if err != nil {
+					return err
+				}
+				out["quality_sql"] = buildQualitySQL(srcDB, table, tgtDB, tgtTable, tgtCols)
 			}
 			if diff && mvErr == nil && n != mvRows {
 				printJSONWithRedKeys(out, []string{"rows", "mv_rows"})
@@ -132,4 +149,5 @@ func init() {
 	countCmd.Flags().String("table", "", "表名")
 	countCmd.Flags().Bool("with-mv", false, "同时查询物化视图行数")
 	countCmd.Flags().Bool("diff", false, "比较源表与物化视图行数，数量不一致标红")
+	countCmd.Flags().Bool("quality-sql", false, "输出数据质量巡检 SQL（需指定 --table）")
 }

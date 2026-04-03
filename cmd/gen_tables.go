@@ -164,7 +164,7 @@ var genTablesCmd = &cobra.Command{
 				RowsPerPartition: rowsPerPartition,
 				BatchSize:        batchSize,
 				GroupName:        groupName + "-" + n,
-				TargetTable:      n + "_replica",
+				TargetTable:      n,
 				TargetDatabase:   targetDatabase,
 				CurrentDatabase:  chDatabase,
 				ExportOrderBy:    exportOrderBy,

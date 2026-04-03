@@ -1,0 +1,10 @@
+DROP VIEW IF EXISTS `demo`.`mv_from_kafka_t_sync_01`;
+DROP VIEW IF EXISTS `demo`.`mv_from_kafka_t_sync_02`;
+DROP VIEW IF EXISTS `demo`.`mv_from_kafka_t_sync_03`;
+DROP VIEW IF EXISTS `demo`.`mv_from_kafka_t_sync_04`;
+DROP VIEW IF EXISTS `demo`.`mv_from_kafka_t_sync_05`;
+DROP VIEW IF EXISTS `demo`.`mv_from_kafka_t_sync_06`;
+DROP VIEW IF EXISTS `demo`.`mv_from_kafka_t_sync_07`;
+DROP VIEW IF EXISTS `demo`.`mv_from_kafka_t_sync_08`;
+DROP VIEW IF EXISTS `demo`.`mv_from_kafka_t_sync_09`;
+DROP VIEW IF EXISTS `demo`.`mv_from_kafka_t_sync_10`;

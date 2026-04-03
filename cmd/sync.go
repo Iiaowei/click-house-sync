@@ -23,6 +23,8 @@ var syncCmd = &cobra.Command{
 		fullExport, _ := cmd.Flags().GetBool("full-export")
 		recreate, _ := cmd.Flags().GetBool("recreate")
 		recreateTopic, _ := cmd.Flags().GetBool("recreate-topic")
+		sourceMVToKafka, _ := cmd.Flags().GetBool("source-mv-to-kafka")
+		kafkaDatabaseFlag, _ := cmd.Flags().GetString("kafka-database")
 		if fullExport {
 			prepareOnly = false
 		}
@@ -76,6 +78,14 @@ var syncCmd = &cobra.Command{
 			} else if t.TargetDatabase != "" {
 				tgtDB = t.TargetDatabase
 			}
+			tgtTable := targetTable
+			if strings.TrimSpace(tgtTable) == "" {
+				if strings.TrimSpace(t.TargetTable) != "" {
+					tgtTable = t.TargetTable
+				} else {
+					tgtTable = t.Name
+				}
+			}
 
 			// 构造资源参数：topic、brokers、replicas、分区估算、批量大小、group
 			topic := srcDB + "_" + t.Name
@@ -127,8 +137,11 @@ var syncCmd = &cobra.Command{
 				}
 				return err
 			}
-			// Kafka 引擎表与推送型/查询型 MV 创建在目标库
+			// Kafka 引擎表与物化视图所在库，默认跟随 target-database，可通过 --kafka-database 显式指定
 			kafkaDB := tgtDB
+			if strings.TrimSpace(kafkaDatabaseFlag) != "" {
+				kafkaDB = strings.TrimSpace(kafkaDatabaseFlag)
+			}
 			if err := clickhouse.CreateDatabaseIfNotExists(db, kafkaDB); err != nil {
 				results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
 				if continueOnError {
@@ -151,8 +164,9 @@ var syncCmd = &cobra.Command{
 				}
 				return err
 			}
-			if queryableMV {
-				if err := clickhouse.CreateMaterializedViewOwn(db, kafkaDB, t.Name, tgtDB); err != nil {
+			typeDiffs := []clickhouse.TypeDiff{}
+			if sourceMVToKafka {
+				if err := clickhouse.CreateMaterializedViewToKafka(db, srcDB, t.Name, kafkaDB); err != nil {
 					results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
 					if continueOnError {
 						continue
@@ -160,12 +174,46 @@ var syncCmd = &cobra.Command{
 					return err
 				}
 			} else {
-				if err := clickhouse.CreateMaterializedViewToKafka(db, srcDB, t.Name, kafkaDB); err != nil {
+				if err := clickhouse.CreateTargetTableLikeSource(db, srcDB, t.Name, tgtDB, tgtTable, "tuple()", ""); err != nil {
 					results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
 					if continueOnError {
 						continue
 					}
 					return err
+				}
+				sourceCols, err := clickhouse.GetColumns(db, srcDB, t.Name)
+				if err != nil {
+					results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
+					if continueOnError {
+						continue
+					}
+					return err
+				}
+				targetCols, err := clickhouse.GetColumns(db, tgtDB, tgtTable)
+				if err != nil {
+					results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
+					if continueOnError {
+						continue
+					}
+					return err
+				}
+				typeDiffs = clickhouse.AnalyzeTypeDiff(sourceCols, targetCols)
+				if queryableMV {
+					if err := clickhouse.CreateMaterializedViewOwn(db, kafkaDB, srcDB, t.Name, tgtDB); err != nil {
+						results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
+						if continueOnError {
+							continue
+						}
+						return err
+					}
+				} else {
+					if err := clickhouse.CreateMaterializedView(db, kafkaDB, t.Name, tgtDB, tgtTable); err != nil {
+						results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
+						if continueOnError {
+							continue
+						}
+						return err
+					}
 				}
 			}
 			if !prepareOnly {
@@ -232,13 +280,15 @@ var syncCmd = &cobra.Command{
 				"partitions":         p,
 				"replication_factor": rep,
 				"group":              group,
-				"kafka_table":        fmt.Sprintf("%s.%s", tgtDB, "kafka_"+t.Name+"_sink"),
+				"kafka_table":        fmt.Sprintf("%s.%s", kafkaDB, "kafka_"+t.Name+"_sink"),
+				"type_diffs":         typeDiffs,
 				"source":             fmt.Sprintf("%s.%s", srcDB, t.Name),
 			}
-			if queryableMV {
-				m["materialized_view"] = fmt.Sprintf("%s.%s", tgtDB, "mv_from_kafka_"+t.Name)
+			if sourceMVToKafka {
+				m["materialized_view_to_kafka"] = fmt.Sprintf("%s.%s", kafkaDB, "mv_to_kafka_"+t.Name)
 			} else {
-				m["materialized_view_to_kafka"] = fmt.Sprintf("%s.%s", tgtDB, "mv_to_kafka_"+t.Name)
+				m["target_table"] = fmt.Sprintf("%s.%s", tgtDB, tgtTable)
+				m["materialized_view"] = fmt.Sprintf("%s.%s", kafkaDB, "mv_from_kafka_"+t.Name)
 			}
 			results = append(results, m)
 		}
@@ -272,6 +322,8 @@ func init() {
 	syncCmd.Flags().Bool("full-export", false, "创建资源后对所有表执行全量导出到Kafka（覆盖 prepare-only，忽略表级/全局游标过滤）")
 	syncCmd.Flags().Bool("recreate", false, "删除并重建 Kafka 表与物化视图（应用新的 brokers/offset/reset 设置）")
 	syncCmd.Flags().Bool("recreate-topic", false, "按 tables.yaml 重新创建 Kafka 主题（先删除旧主题再创建）")
+	syncCmd.Flags().Bool("source-mv-to-kafka", false, "在源库创建 mv_to_kafka_<table>（实时写入 Kafka），不创建目标落库 MV")
+	syncCmd.Flags().String("kafka-database", "", "Kafka 引擎表与 MV 所在库（默认跟随 target-database）")
 }
 
 // splitCSV 将逗号分隔的字符串拆分并去除空格。

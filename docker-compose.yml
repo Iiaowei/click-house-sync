@@ -1,0 +1,134 @@
+services:
+  ck-source:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: ch-sync-ck-source
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: demo
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ck_source_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  ck-target:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: ch-sync-ck-target
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: demo
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "8124:8123"
+      - "9001:9000"
+    volumes:
+      - ck_target_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: ch-sync-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+  ch-init:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: ch-sync-init
+    restart: "no"
+    depends_on:
+      ck-source:
+        condition: service_healthy
+      ck-target:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./docker/init:/init:ro
+    entrypoint:
+      - /bin/bash
+      - /init/startup.sh
+  ch-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ch-sync-cli
+    restart: "no"
+    depends_on:
+      ck-source:
+        condition: service_healthy
+      ck-target:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    command:
+      - --help
+  ch-sync-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ch-sync-pipeline
+    restart: "no"
+    depends_on:
+      ck-source:
+        condition: service_healthy
+      ck-target:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      ch-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./docker/pipeline-output:/workspace/out
+    entrypoint:
+      - /bin/bash
+      - -lc
+    command:
+      - |
+        set -euo pipefail
+        mkdir -p /workspace/out
+        ch-sync --ch-host ck-source --ch-port 9000 --ch-user default --ch-database demo gen-ddl --ddl-database demo --output /workspace/out/demo_tables.sql
+        ch-sync --ch-host ck-target --ch-port 9000 --ch-user default --ch-database demo exec-ddl --file /workspace/out/demo_tables.sql --continue-on-error
+        ch-sync --ch-host ck-source --ch-port 9000 --ch-user default --ch-database demo --kafka-brokers kafka:9092 --target-database demo gen-tables --output /workspace/out/tables.yaml --include-columns created_at --cursor-column created_at --cursor-start "1970-01-01 00:00:00"
+        ch-sync --ch-host ck-target --ch-port 9000 --ch-user default --ch-database demo --target-database demo --kafka-database demo_stream --kafka-brokers kafka:9092 sync --tables-file /workspace/out/tables.yaml --prepare-only --recreate
+        ch-sync --ch-host ck-source --ch-port 9000 --ch-user default --ch-database demo --target-database demo --kafka-database demo_stream --kafka-brokers kafka:9092 sync --tables-file /workspace/out/tables.yaml --full-export --continue-on-error --source-mv-to-kafka
+        ch-sync --ch-host ck-source --ch-port 9000 --ch-user default --ch-database demo schema-diff-batch --tables-file /workspace/out/tables.yaml --target-host ck-target --target-port 9000 --target-db demo > /workspace/out/schema_diff_summary.json
+        date -u +"%Y-%m-%dT%H:%M:%SZ" > /workspace/out/pipeline.done
+        tail -f /dev/null
+
+volumes:
+  ck_source_data:
+  ck_target_data:
+  kafka_data:

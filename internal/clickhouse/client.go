@@ -68,6 +68,13 @@ type Column struct {
 	Position uint64
 }
 
+type TypeDiff struct {
+	Column     string `json:"column"`
+	SourceType string `json:"source_type"`
+	TargetType string `json:"target_type"`
+	Issue      string `json:"issue"`
+}
+
 // GetColumns 查询 system.columns 获取源表的列结构。
 func GetColumns(db *sql.DB, database string, table string) ([]Column, error) {
 	rs, err := db.Query("SELECT name, type, position FROM system.columns WHERE database = ? AND table = ? ORDER BY position", database, table)
@@ -84,6 +91,49 @@ func GetColumns(db *sql.DB, database string, table string) ([]Column, error) {
 		cols = append(cols, c)
 	}
 	return cols, nil
+}
+
+func AnalyzeTypeDiff(sourceCols []Column, targetCols []Column) []TypeDiff {
+	srcMap := map[string]Column{}
+	tgtMap := map[string]Column{}
+	for _, c := range sourceCols {
+		srcMap[c.Name] = c
+	}
+	for _, c := range targetCols {
+		tgtMap[c.Name] = c
+	}
+	var diffs []TypeDiff
+	for _, t := range targetCols {
+		s, ok := srcMap[t.Name]
+		if !ok {
+			diffs = append(diffs, TypeDiff{
+				Column:     t.Name,
+				SourceType: "",
+				TargetType: t.Type,
+				Issue:      "missing_in_source",
+			})
+			continue
+		}
+		if normalizeCHType(s.Type) != normalizeCHType(t.Type) {
+			diffs = append(diffs, TypeDiff{
+				Column:     t.Name,
+				SourceType: s.Type,
+				TargetType: t.Type,
+				Issue:      "type_mismatch",
+			})
+		}
+	}
+	for _, s := range sourceCols {
+		if _, ok := tgtMap[s.Name]; !ok {
+			diffs = append(diffs, TypeDiff{
+				Column:     s.Name,
+				SourceType: s.Type,
+				TargetType: "",
+				Issue:      "missing_in_target",
+			})
+		}
+	}
+	return diffs
 }
 
 func GetTableEngine(db *sql.DB, database string, table string) (string, error) {
@@ -114,35 +164,9 @@ func CreateKafkaTable(db *sql.DB, database string, table string, brokers []strin
 	if err != nil {
 		return err
 	}
-	var ddlCols string
-	for i, c := range cols {
-		if i > 0 {
-			ddlCols += ","
-		}
-		ddlCols += fmt.Sprintf("%s %s", quoteIdent(c.Name), c.Type)
-	}
+	ddlCols := buildStringColumnsDDL(cols)
 	name := qualified(database, "kafka_"+table+"_sink")
-	ddl := ""
-	if strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
-		ddl = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
-	} else {
-		if strings.TrimSpace(autoOffsetReset) == "" {
-			autoOffsetReset = "latest"
-		}
-		ddl = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d, kafka_auto_offset_reset = '%s'", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize, autoOffsetReset)
-	}
-	_, err = db.Exec(ddl)
-	if err != nil {
-		if isUnknownKafkaAutoOffsetResetError(err) && !strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
-			ddl2 := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
-			if _, e2 := db.Exec(ddl2); e2 == nil {
-				return nil
-			}
-			return fmt.Errorf("ddl_failed: %s ; error: %v", ddl2, err)
-		}
-		return fmt.Errorf("ddl_failed: %s ; error: %v", ddl, err)
-	}
-	return nil
+	return createKafkaTableByDDL(db, name, ddlCols, brokers, topic, group, format, numConsumers, maxBlockSize, autoOffsetReset)
 }
 
 // CreateKafkaTableFromSource 在 kafkaDatabase 中按 sourceDatabase.table 的结构创建 Kafka 引擎表。
@@ -151,35 +175,9 @@ func CreateKafkaTableFromSource(db *sql.DB, sourceDatabase string, table string,
 	if err != nil {
 		return err
 	}
-	var ddlCols string
-	for i, c := range cols {
-		if i > 0 {
-			ddlCols += ","
-		}
-		ddlCols += fmt.Sprintf("%s %s", quoteIdent(c.Name), c.Type)
-	}
+	ddlCols := buildStringColumnsDDL(cols)
 	name := qualified(kafkaDatabase, "kafka_"+table+"_sink")
-	ddl := ""
-	if strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
-		ddl = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
-	} else {
-		if strings.TrimSpace(autoOffsetReset) == "" {
-			autoOffsetReset = "latest"
-		}
-		ddl = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d, kafka_auto_offset_reset = '%s'", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize, autoOffsetReset)
-	}
-	_, err = db.Exec(ddl)
-	if err != nil {
-		if isUnknownKafkaAutoOffsetResetError(err) && !strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
-			ddl2 := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
-			if _, e2 := db.Exec(ddl2); e2 == nil {
-				return nil
-			}
-			return fmt.Errorf("ddl_failed: %s ; error: %v", ddl2, err)
-		}
-		return fmt.Errorf("ddl_failed: %s ; error: %v", ddl, err)
-	}
-	return nil
+	return createKafkaTableByDDL(db, name, ddlCols, brokers, topic, group, format, numConsumers, maxBlockSize, autoOffsetReset)
 }
 
 func isUnknownKafkaAutoOffsetResetError(err error) bool {
@@ -195,24 +193,47 @@ func CreateMaterializedView(db *sql.DB, kafkaDatabase string, sourceTable string
 	if targetDatabase == "" {
 		targetDatabase = kafkaDatabase
 	}
-	mv := qualified(targetDatabase, "mv_from_kafka_"+sourceTable)
-	// Materialized view consuming Kafka and writing into target table
-	ddl := fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s AS SELECT * FROM %s SETTINGS stream_like_engine_allow_direct_select=1, input_format_skip_unknown_fields=1, input_format_allow_errors_num=1000000, input_format_allow_errors_ratio=0.1, date_time_input_format='best_effort'", mv, qualified(targetDatabase, targetTable), qualified(kafkaDatabase, "kafka_"+sourceTable+"_sink"))
-	_, err := db.Exec(ddl)
+	targetCols, err := GetColumns(db, targetDatabase, targetTable)
+	if err != nil {
+		return err
+	}
+	kafkaCols, err := GetColumns(db, kafkaDatabase, "kafka_"+sourceTable+"_sink")
+	if err != nil {
+		return err
+	}
+	selectExpr, err := BuildMvSelectWithCasts(kafkaCols, targetCols)
+	if err != nil {
+		return err
+	}
+	mv := qualified(kafkaDatabase, "mv_from_kafka_"+sourceTable)
+	ddl := fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s AS SELECT %s FROM %s SETTINGS stream_like_engine_allow_direct_select=1, input_format_skip_unknown_fields=1, date_time_input_format='best_effort'", mv, qualified(targetDatabase, targetTable), selectExpr, qualified(kafkaDatabase, "kafka_"+sourceTable+"_sink"))
+	_, err = db.Exec(ddl)
 	return err
 }
 
 // CreateMaterializedViewOwn 创建自带 MergeTree 存储的物化视图（可直接查询）。
-func CreateMaterializedViewOwn(db *sql.DB, kafkaDatabase string, sourceTable string, targetDatabase string) error {
+func CreateMaterializedViewOwn(db *sql.DB, kafkaDatabase string, sourceDatabase string, sourceTable string, targetDatabase string) error {
 	if targetDatabase == "" {
 		targetDatabase = kafkaDatabase
 	}
 	if err := CreateDatabaseIfNotExists(db, targetDatabase); err != nil {
 		return err
 	}
+	sourceCols, err := GetColumns(db, sourceDatabase, sourceTable)
+	if err != nil {
+		return err
+	}
+	kafkaCols, err := GetColumns(db, kafkaDatabase, "kafka_"+sourceTable+"_sink")
+	if err != nil {
+		return err
+	}
+	selectExpr, err := BuildMvSelectWithCasts(kafkaCols, sourceCols)
+	if err != nil {
+		return err
+	}
 	mv := qualified(targetDatabase, "mv_from_kafka_"+sourceTable)
-	ddl := fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s ENGINE = MergeTree ORDER BY tuple() AS SELECT * FROM %s SETTINGS stream_like_engine_allow_direct_select=1, input_format_skip_unknown_fields=1, input_format_allow_errors_num=1000000, input_format_allow_errors_ratio=0.1, date_time_input_format='best_effort'", mv, qualified(kafkaDatabase, "kafka_"+sourceTable+"_sink"))
-	_, err := db.Exec(ddl)
+	ddl := fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s ENGINE = MergeTree ORDER BY tuple() AS SELECT %s FROM %s SETTINGS stream_like_engine_allow_direct_select=1, input_format_skip_unknown_fields=1, date_time_input_format='best_effort'", mv, selectExpr, qualified(kafkaDatabase, "kafka_"+sourceTable+"_sink"))
+	_, err = db.Exec(ddl)
 	return err
 }
 
@@ -221,15 +242,138 @@ func CreateMaterializedViewToKafka(db *sql.DB, sourceDatabase string, sourceTabl
 	if kafkaDatabase == "" {
 		kafkaDatabase = sourceDatabase
 	}
+	sourceCols, err := GetColumns(db, sourceDatabase, sourceTable)
+	if err != nil {
+		return err
+	}
+	selectExpr := BuildSelectToString(sourceCols)
 	mv := qualified(kafkaDatabase, "mv_to_kafka_"+sourceTable)
 	targetKafka := qualified(kafkaDatabase, "kafka_"+sourceTable+"_sink")
 	src := qualified(sourceDatabase, sourceTable)
-	ddl := fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s AS SELECT * FROM %s", mv, targetKafka, src)
-	_, err := db.Exec(ddl)
+	ddl := fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s AS SELECT %s FROM %s", mv, targetKafka, selectExpr, src)
+	_, err = db.Exec(ddl)
 	if err != nil {
 		return fmt.Errorf("ddl_failed: %s ; error: %v", ddl, err)
 	}
 	return nil
+}
+
+func BuildMvSelectWithCasts(inputCols []Column, targetCols []Column) (string, error) {
+	inMap := map[string]Column{}
+	for _, c := range inputCols {
+		inMap[c.Name] = c
+	}
+	var exprs []string
+	for _, t := range targetCols {
+		if _, ok := inMap[t.Name]; !ok {
+			return "", fmt.Errorf("target_column_missing_in_input: %s", t.Name)
+		}
+		src := quoteIdent(t.Name)
+		expr := BuildStrictCastExpr(src, t.Type)
+		exprs = append(exprs, fmt.Sprintf("%s AS %s", expr, quoteIdent(t.Name)))
+	}
+	return strings.Join(exprs, ","), nil
+}
+
+func BuildSelectToString(cols []Column) string {
+	var exprs []string
+	for _, c := range cols {
+		name := quoteIdent(c.Name)
+		exprs = append(exprs, fmt.Sprintf("CAST(%s AS String) AS %s", name, name))
+	}
+	return strings.Join(exprs, ",")
+}
+
+func BuildStrictCastExpr(sourceExpr string, targetType string) string {
+	t := strings.TrimSpace(targetType)
+	if t == "" {
+		return sourceExpr
+	}
+	if inner, ok := unwrapType(t, "Nullable"); ok {
+		return fmt.Sprintf("CAST(%s, '%s')", BuildStrictCastExpr(sourceExpr, inner), t)
+	}
+	if inner, ok := unwrapType(t, "LowCardinality"); ok {
+		return fmt.Sprintf("CAST(%s, '%s')", BuildStrictCastExpr(sourceExpr, inner), t)
+	}
+	if isDateLikeType(t) {
+		return fmt.Sprintf("CAST(parseDateTimeBestEffort(%s), '%s')", sourceExpr, t)
+	}
+	if strings.EqualFold(baseTypeName(t), "String") {
+		return sourceExpr
+	}
+	return fmt.Sprintf("CAST(%s, '%s')", sourceExpr, t)
+}
+
+func createKafkaTableByDDL(db *sql.DB, name string, ddlCols string, brokers []string, topic string, group string, format string, numConsumers int, maxBlockSize int, autoOffsetReset string) error {
+	ddl := ""
+	if strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
+		ddl = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
+	} else {
+		if strings.TrimSpace(autoOffsetReset) == "" {
+			autoOffsetReset = "latest"
+		}
+		ddl = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d, kafka_auto_offset_reset = '%s'", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize, autoOffsetReset)
+	}
+	_, err := db.Exec(ddl)
+	if err != nil {
+		if isUnknownKafkaAutoOffsetResetError(err) && !strings.EqualFold(strings.TrimSpace(autoOffsetReset), "skip") {
+			ddl2 := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = Kafka SETTINGS kafka_broker_list = '%s', kafka_topic_list = '%s', kafka_group_name = '%s', kafka_format = '%s', kafka_num_consumers = %d, kafka_max_block_size = %d", name, ddlCols, stringsJoin(brokers), topic, group, format, numConsumers, maxBlockSize)
+			if _, e2 := db.Exec(ddl2); e2 == nil {
+				return nil
+			}
+			return fmt.Errorf("ddl_failed: %s ; error: %v", ddl2, err)
+		}
+		return fmt.Errorf("ddl_failed: %s ; error: %v", ddl, err)
+	}
+	return nil
+}
+
+func buildStringColumnsDDL(cols []Column) string {
+	var ddlCols string
+	for i, c := range cols {
+		if i > 0 {
+			ddlCols += ","
+		}
+		ddlCols += fmt.Sprintf("%s String", quoteIdent(c.Name))
+	}
+	return ddlCols
+}
+
+func unwrapType(t string, fn string) (string, bool) {
+	s := strings.TrimSpace(t)
+	prefix := fn + "("
+	if !strings.HasPrefix(s, prefix) || !strings.HasSuffix(s, ")") {
+		return "", false
+	}
+	return strings.TrimSpace(s[len(prefix) : len(s)-1]), true
+}
+
+func baseTypeName(t string) string {
+	s := strings.TrimSpace(t)
+	for {
+		if inner, ok := unwrapType(s, "Nullable"); ok {
+			s = inner
+			continue
+		}
+		if inner, ok := unwrapType(s, "LowCardinality"); ok {
+			s = inner
+			continue
+		}
+		break
+	}
+	if i := strings.IndexByte(s, '('); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+func isDateLikeType(t string) bool {
+	base := strings.ToLower(baseTypeName(t))
+	return base == "date" || base == "date32" || base == "datetime" || base == "datetime64"
+}
+
+func normalizeCHType(t string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(t)), " ", "")
 }
 
 // CreateDatabaseIfNotExists 若数据库不存在则创建。

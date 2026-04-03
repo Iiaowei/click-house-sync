@@ -1,0 +1,10 @@
+{
+  "command": "schema-diff-batch",
+  "correct_count": 10,
+  "error_count": 0,
+  "error_tables": [],
+  "forced_output": true,
+  "matched_exact": true,
+  "tables_file": "/workspace/out/tables.yaml",
+  "total_count": 10
+}
