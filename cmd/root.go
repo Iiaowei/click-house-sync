@@ -49,10 +49,18 @@ var (
 	jsonColorMode         string
 	kafkaMaxBlockSize     int
 	queryableMV           bool
-	respectTableDB        bool
 	kafkaAutoOffsetReset  string
 	queueSize             int
 	writers               int
+	mvEngine              string
+	mvOrderBy             string
+	mvPartitionBy         string
+	versionColumn         string
+	signColumn            string
+	versionTimeColumn     string
+	mvTTLDays             int
+    mvTTLColumn           string
+    mvMaxPartitionsPerInsertBlock int
 )
 
 // rootCmd 是 ch-sync 的根命令。
@@ -126,12 +134,20 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&tablesFile, "tables-file", "", "外部表清单文件路径 用于批量同步")
 	rootCmd.PersistentFlags().BoolVar(&jsonPretty, "json-pretty", true, "格式化JSON输出")
 	rootCmd.PersistentFlags().StringVar(&jsonColorMode, "json-color", "auto", "JSON高亮模式 auto|always|never")
-	rootCmd.PersistentFlags().IntVar(&kafkaMaxBlockSize, "kafka-max-block-size", 1048576, "Kafka 引擎表的 kafka_max_block_size 设置")
+	rootCmd.PersistentFlags().IntVar(&kafkaMaxBlockSize, "kafka-max-block-size", 700, "Kafka 引擎表的 kafka_max_block_size 设置")
 	rootCmd.PersistentFlags().BoolVar(&queryableMV, "queryable-mv", false, "创建可查询的物化视图（ENGINE=MergeTree），替代推送型 MV")
-	rootCmd.PersistentFlags().BoolVar(&respectTableDB, "respect-table-db", false, "优先使用 tables.yaml 中每表的 current_database 作为源库（忽略 --ch-database）")
 	rootCmd.PersistentFlags().StringVar(&kafkaAutoOffsetReset, "kafka-auto-offset-reset", "latest", "Kafka 引擎表的 kafka_auto_offset_reset 设置（earliest|latest|skip）")
 	rootCmd.PersistentFlags().IntVar(&queueSize, "queue-size", 10, "导出读写队列容量（默认 10，队列满则读端等待）")
 	rootCmd.PersistentFlags().IntVar(&writers, "writers", 1, "并行写端 goroutine 数（默认 1）")
+	rootCmd.PersistentFlags().StringVar(&mvEngine, "mv-engine", "merge", "查询物化视图引擎 merge|replacing|collapsing|versioned_collapsing")
+	rootCmd.PersistentFlags().StringVar(&mvOrderBy, "mv-order-by", "", "查询物化视图 ORDER BY 表达式（默认 tuple()）")
+	rootCmd.PersistentFlags().StringVar(&mvPartitionBy, "mv-partition-by", "", "查询物化视图 PARTITION BY 表达式（可选）")
+	rootCmd.PersistentFlags().StringVar(&versionColumn, "version-column", "", "Replacing 引擎的版本列名（可选）")
+	rootCmd.PersistentFlags().StringVar(&signColumn, "sign-column", "", "Collapsing 引擎的符号列名（可选，+1 插入，-1 删除）")
+	rootCmd.PersistentFlags().StringVar(&versionTimeColumn, "version-time-column", "", "用于推导版本号的时间列名（当未提供 version 列时）")
+	rootCmd.PersistentFlags().IntVar(&mvTTLDays, "mv-ttl-days", 730, "查询物化视图数据有效期天数（TTL），默认 730（约两年）")
+    rootCmd.PersistentFlags().StringVar(&mvTTLColumn, "mv-ttl-column", "", "查询物化视图 TTL 的时间列名（可选，缺省自动探测）")
+    rootCmd.PersistentFlags().IntVar(&mvMaxPartitionsPerInsertBlock, "max-partitions-per-insert-block", 1000, "查询物化视图单次插入块允许的分区上限（默认 1000）")
 }
 
 func brokersList() []string {
@@ -209,6 +225,33 @@ func applyConfig(cmd *cobra.Command, conf *config.Config) {
 	if !cmd.Flags().Changed("tables-file") && conf.Sync.TablesFile != "" {
 		tablesFile = conf.Sync.TablesFile
 	}
+	if !cmd.Flags().Changed("mv-engine") && strings.TrimSpace(conf.Sync.MVEngine) != "" {
+		mvEngine = conf.Sync.MVEngine
+	}
+	if !cmd.Flags().Changed("mv-order-by") && strings.TrimSpace(conf.Sync.MVOrderBy) != "" {
+		mvOrderBy = conf.Sync.MVOrderBy
+	}
+	if !cmd.Flags().Changed("mv-partition-by") && strings.TrimSpace(conf.Sync.MVPartitionBy) != "" {
+		mvPartitionBy = conf.Sync.MVPartitionBy
+	}
+	if !cmd.Flags().Changed("version-column") && strings.TrimSpace(conf.Sync.VersionColumn) != "" {
+		versionColumn = conf.Sync.VersionColumn
+	}
+	if !cmd.Flags().Changed("sign-column") && strings.TrimSpace(conf.Sync.SignColumn) != "" {
+		signColumn = conf.Sync.SignColumn
+	}
+	if !cmd.Flags().Changed("mv-ttl-days") && conf.Sync.MVTTLDays > 0 {
+		mvTTLDays = conf.Sync.MVTTLDays
+	}
+	if !cmd.Flags().Changed("mv-ttl-column") && strings.TrimSpace(conf.Sync.MVTTLColumn) != "" {
+		mvTTLColumn = conf.Sync.MVTTLColumn
+	}
+    if !cmd.Flags().Changed("version-time-column") && strings.TrimSpace(conf.Sync.VersionTimeColumn) != "" {
+        versionTimeColumn = conf.Sync.VersionTimeColumn
+    }
+    if !cmd.Flags().Changed("max-partitions-per-insert-block") && conf.Sync.MaxPartitionsPerInsertBlock > 0 {
+        mvMaxPartitionsPerInsertBlock = conf.Sync.MaxPartitionsPerInsertBlock
+    }
 }
 
 func autoFindConfig() string {

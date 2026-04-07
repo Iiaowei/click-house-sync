@@ -5,7 +5,7 @@ DIST := dist
 CONFIG := config.yaml
 TABLES := tables.yaml
 
-.PHONY: all tidy build build-mac build-linux package-mac package-linux release clean
+.PHONY: all tidy build build-mac build-linux build-windows package-mac package-linux package-windows release clean
 
 all: build
 
@@ -38,9 +38,18 @@ package-linux: build-linux
 	- cp README.md $(DIST)/$(BIN)-linux-amd64/ 2>/dev/null || true
 	cd $(DIST) && tar -czf $(BIN)-linux-amd64-$(VERSION).tar.gz $(BIN)-linux-amd64
 
-release: package-mac package-linux
+release: package-mac package-linux package-windows
 	@echo "Release artifacts in $(DIST):"
 	ls -lh $(DIST)
 
 clean:
 	rm -rf bin $(DIST)
+build-windows:
+	mkdir -p $(DIST)/$(BIN)-windows-amd64
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BIN)-windows-amd64/$(BIN).exe .
+
+package-windows: build-windows
+	cp $(CONFIG) $(DIST)/$(BIN)-windows-amd64/
+	- cp $(TABLES) $(DIST)/$(BIN)-windows-amd64/ 2>/dev/null || true
+	- cp README.md $(DIST)/$(BIN)-windows-amd64/ 2>/dev/null || true
+	cd $(DIST) && zip -r $(BIN)-windows-amd64-$(VERSION).zip $(BIN)-windows-amd64

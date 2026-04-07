@@ -90,7 +90,41 @@ var autoCmd = &cobra.Command{
 		if err := clickhouse.CreateDatabaseIfNotExists(db, kafkaDB); err != nil {
 			return err
 		}
-		if err := clickhouse.CreateKafkaTableFromSource(db, srcDB, table, kafkaDB, brokers, kafkaTopic, group, "JSONEachRow", 1, kafkaMaxBlockSize, kafkaAutoOffsetReset); err != nil {
+		eng := mvEngine
+		if tconf != nil && strings.TrimSpace(tconf.MVEngine) != "" {
+			eng = tconf.MVEngine
+		}
+		verCol := versionColumn
+		if tconf != nil && strings.TrimSpace(tconf.VersionColumn) != "" {
+			verCol = tconf.VersionColumn
+		}
+		sCol := signColumn
+		if tconf != nil && strings.TrimSpace(tconf.SignColumn) != "" {
+			sCol = tconf.SignColumn
+		}
+		extras := map[string]string{}
+		switch strings.ToLower(strings.TrimSpace(eng)) {
+		case "replacing":
+			if strings.TrimSpace(verCol) != "" {
+				extras[verCol] = "UInt64"
+			}
+		case "collapsing":
+			if strings.TrimSpace(sCol) != "" {
+				extras[sCol] = "Int8"
+			}
+		case "versioned_collapsing":
+			if strings.TrimSpace(sCol) != "" {
+				extras[sCol] = "Int8"
+			} else {
+				extras["sign"] = "Int8"
+			}
+			if strings.TrimSpace(verCol) != "" {
+				extras[verCol] = "UInt64"
+			} else {
+				extras["version"] = "UInt64"
+			}
+		}
+		if err := clickhouse.CreateKafkaTableFromSource(db, srcDB, table, kafkaDB, brokers, kafkaTopic, group, "JSONEachRow", 1, kafkaMaxBlockSize, kafkaAutoOffsetReset, extras); err != nil {
 			return err
 		}
 		if err := clickhouse.CreateTargetTableLikeSource(db, srcDB, table, targetDatabase, tgtTable, "tuple()", ""); err != nil {
@@ -134,6 +168,16 @@ var autoCmd = &cobra.Command{
 			if strings.TrimSpace(tconf.CursorEnd) != "" {
 				curEnd = tconf.CursorEnd
 			}
+		}
+		vtCol := strings.TrimSpace(versionTimeColumn)
+		if tconf != nil && strings.TrimSpace(tconf.VersionTimeColumn) != "" {
+			vtCol = strings.TrimSpace(tconf.VersionTimeColumn)
+		}
+		if strings.TrimSpace(curCol) == "" && strings.TrimSpace(vtCol) != "" {
+			curCol = vtCol
+		}
+		if strings.TrimSpace(ord) == "" && strings.TrimSpace(vtCol) != "" {
+			ord = vtCol
 		}
 		if err := exportTableToKafka(db, srcDB, table, brokers, kafkaTopic, bs, ord, keycol, curCol, curStart, curEnd, 1, 1, n); err != nil {
 			return err

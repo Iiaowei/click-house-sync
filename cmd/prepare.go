@@ -96,7 +96,50 @@ var prepareCmd = &cobra.Command{
 			return err
 		}
 		// 创建 Kafka 引擎表（字段结构与源表一致）
-		if err := clickhouse.CreateKafkaTableFromSource(db, srcDB, table, kafkaDB, brokers, kafkaTopic, group, "JSONEachRow", 1, kafkaMaxBlockSize, kafkaAutoOffsetReset); err != nil {
+		// decide MV engine and extras for Kafka sink schema
+		eng := mvEngine
+		if tconf != nil && strings.TrimSpace(tconf.MVEngine) != "" {
+			eng = tconf.MVEngine
+		}
+		mvOrd := mvOrderBy
+		if tconf != nil && strings.TrimSpace(tconf.MVOrderBy) != "" {
+			mvOrd = tconf.MVOrderBy
+		}
+		mvPart := mvPartitionBy
+		if tconf != nil && strings.TrimSpace(tconf.MVPartitionBy) != "" {
+			mvPart = tconf.MVPartitionBy
+		}
+		verCol := versionColumn
+		if tconf != nil && strings.TrimSpace(tconf.VersionColumn) != "" {
+			verCol = tconf.VersionColumn
+		}
+		sCol := signColumn
+		if tconf != nil && strings.TrimSpace(tconf.SignColumn) != "" {
+			sCol = tconf.SignColumn
+		}
+		extras := map[string]string{}
+		switch strings.ToLower(strings.TrimSpace(eng)) {
+		case "replacing":
+			if strings.TrimSpace(verCol) != "" {
+				extras[verCol] = "UInt64"
+			}
+		case "collapsing":
+			if strings.TrimSpace(sCol) != "" {
+				extras[sCol] = "Int8"
+			}
+		case "versioned_collapsing":
+			if strings.TrimSpace(sCol) != "" {
+				extras[sCol] = "Int8"
+			} else {
+				extras["sign"] = "Int8"
+			}
+			if strings.TrimSpace(verCol) != "" {
+				extras[verCol] = "UInt64"
+			} else {
+				extras["version"] = "UInt64"
+			}
+		}
+		if err := clickhouse.CreateKafkaTableFromSource(db, srcDB, table, kafkaDB, brokers, kafkaTopic, group, "JSONEachRow", 1, kafkaMaxBlockSize, kafkaAutoOffsetReset, extras); err != nil {
 			return err
 		}
 		if err := clickhouse.CreateTargetTableLikeSource(db, srcDB, table, targetDatabase, tgtTable, "tuple()", ""); err != nil {
@@ -112,7 +155,17 @@ var prepareCmd = &cobra.Command{
 		}
 		typeDiffs := clickhouse.AnalyzeTypeDiff(sourceCols, targetCols)
 		if queryableMV {
-			if err := clickhouse.CreateMaterializedViewOwn(db, kafkaDB, srcDB, table, targetDatabase); err != nil {
+			td := mvTTLDays
+			tc := mvTTLColumn
+			if tconf != nil {
+				if tconf.MVTTLDays > 0 {
+					td = tconf.MVTTLDays
+				}
+				if strings.TrimSpace(tconf.MVTTLColumn) != "" {
+					tc = tconf.MVTTLColumn
+				}
+			}
+			if err := clickhouse.CreateMaterializedViewOwn(db, kafkaDB, srcDB, table, targetDatabase, eng, mvOrd, mvPart, verCol, sCol, td, tc, mvMaxPartitionsPerInsertBlock); err != nil {
 				return err
 			}
 			printJSON(map[string]any{

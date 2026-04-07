@@ -54,9 +54,16 @@ var exportCmd = &cobra.Command{
 		for _, c := range cols {
 			names = append(names, c.Name)
 		}
+		vtCol := strings.TrimSpace(versionTimeColumn)
+		if tconf != nil && strings.TrimSpace(tconf.VersionTimeColumn) != "" {
+			vtCol = strings.TrimSpace(tconf.VersionTimeColumn)
+		}
 		ord := exportOrderBy
 		if tconf != nil && strings.TrimSpace(tconf.ExportOrderBy) != "" {
 			ord = tconf.ExportOrderBy
+		}
+		if strings.TrimSpace(ord) == "" && strings.TrimSpace(vtCol) != "" {
+			ord = vtCol
 		}
 		keyCol := exportKeyColumn
 		if tconf != nil && strings.TrimSpace(tconf.ExportKeyColumn) != "" {
@@ -74,6 +81,14 @@ var exportCmd = &cobra.Command{
 			}
 			if strings.TrimSpace(tconf.CursorEnd) != "" {
 				curEnd = tconf.CursorEnd
+			}
+		}
+		if strings.TrimSpace(curCol) == "" && strings.TrimSpace(vtCol) != "" {
+			for _, n := range names {
+				if n == vtCol {
+					curCol = vtCol
+					break
+				}
 			}
 		}
 		if watch && cursorStartFromTarget && strings.TrimSpace(curCol) != "" {
@@ -289,6 +304,200 @@ var exportCmd = &cobra.Command{
 						m[name] = v
 					}
 				}
+				eng := strings.ToLower(strings.TrimSpace(mvEngine))
+				if eng == "versioned_collapsing" {
+					sc := strings.TrimSpace(signColumn)
+					if sc == "" {
+						sc = "sign"
+					}
+					vc := strings.TrimSpace(versionColumn)
+					if vc == "" {
+						vc = "version"
+					}
+					if _, ok := m[sc]; !ok {
+						var signVal int8 = 1
+						for _, cand := range []string{"is_deleted", "deleted", "del_flag", "is_delete", "remove_flag"} {
+							if v, ok := m[cand]; ok {
+								switch t := v.(type) {
+								case bool:
+									if t {
+										signVal = -1
+									}
+								case string:
+									s := strings.ToLower(strings.TrimSpace(t))
+									if s == "1" || s == "true" || s == "t" || s == "yes" || s == "y" {
+										signVal = -1
+									}
+								default:
+									fv := fmt.Sprint(v)
+									s := strings.ToLower(strings.TrimSpace(fv))
+									if s == "1" || s == "-1" || s == "true" {
+										if s == "-1" {
+											signVal = -1
+										} else if s == "1" || s == "true" {
+											signVal = -1
+										}
+									}
+								}
+								break
+							}
+						}
+						m[sc] = signVal
+					}
+					if _, ok := m[vc]; !ok {
+						var ver uint64
+						var found bool
+						var cands []string
+						if strings.TrimSpace(vtCol) != "" {
+							cands = append(cands, vtCol)
+						}
+						cands = append(cands, []string{"updated_at", "update_ts", "ts", "event_time", "modified_at", "insert_ts", "created_at"}...)
+						for _, cand := range cands {
+							if v, ok := m[cand]; ok {
+								switch t := v.(type) {
+								case string:
+									if tt, err := time.Parse("2006-01-02 15:04:05", t); err == nil {
+										ver = uint64(tt.UnixNano() / 1e6)
+										found = true
+									}
+								case time.Time:
+									ver = uint64(t.UnixNano() / 1e6)
+									found = true
+								default:
+									fv := fmt.Sprint(v)
+									if tt, err := time.Parse("2006-01-02 15:04:05", fv); err == nil {
+										ver = uint64(tt.UnixNano() / 1e6)
+										found = true
+									}
+								}
+								if found {
+									break
+								}
+							}
+						}
+						if !found {
+							ver = uint64(time.Now().UnixNano() / 1e6)
+						}
+						m[vc] = ver
+					}
+				} else if eng == "replacing" {
+					vc := strings.TrimSpace(versionColumn)
+					if vc != "" {
+						if val, ok := m[vc]; !ok || val == nil || strings.TrimSpace(fmt.Sprint(val)) == "" {
+							var ver uint64
+							var found bool
+							var cands []string
+							if strings.TrimSpace(vtCol) != "" {
+								cands = append(cands, vtCol)
+							}
+							cands = append(cands, []string{"updated_at", "update_ts", "ts", "event_time", "modified_at", "insert_ts", "created_at"}...)
+							for _, cand := range cands {
+								if v, ok := m[cand]; ok {
+									switch t := v.(type) {
+									case string:
+										if tt, err := time.Parse("2006-01-02 15:04:05", t); err == nil {
+											ver = uint64(tt.UnixNano() / 1e6)
+											found = true
+										}
+									case time.Time:
+										ver = uint64(t.UnixNano() / 1e6)
+										found = true
+									default:
+										fv := fmt.Sprint(v)
+										if tt, err := time.Parse("2006-01-02 15:04:05", fv); err == nil {
+											ver = uint64(tt.UnixNano() / 1e6)
+											found = true
+										}
+									}
+									if found {
+										break
+									}
+								}
+							}
+							if !found {
+								ver = uint64(time.Now().UnixNano() / 1e6)
+							}
+							m[vc] = ver
+						}
+					}
+				}
+				eng2 := strings.ToLower(strings.TrimSpace(mvEngine))
+				if eng2 == "versioned_collapsing" {
+					sc := strings.TrimSpace(signColumn)
+					if sc == "" {
+						sc = "sign"
+					}
+					vc := strings.TrimSpace(versionColumn)
+					if vc == "" {
+						vc = "version"
+					}
+					if _, ok := m[sc]; !ok {
+						var signVal int8 = 1
+						for _, cand := range []string{"is_deleted", "deleted", "del_flag", "is_delete", "remove_flag"} {
+							if v, ok := m[cand]; ok {
+								switch t := v.(type) {
+								case bool:
+									if t {
+										signVal = -1
+									}
+								case string:
+									s := strings.ToLower(strings.TrimSpace(t))
+									if s == "1" || s == "true" || s == "t" || s == "yes" || s == "y" {
+										signVal = -1
+									}
+								default:
+									fv := fmt.Sprint(v)
+									s := strings.ToLower(strings.TrimSpace(fv))
+									if s == "1" || s == "-1" || s == "true" {
+										if s == "-1" {
+											signVal = -1
+										} else if s == "1" || s == "true" {
+											signVal = -1
+										}
+									}
+								}
+								break
+							}
+						}
+						m[sc] = signVal
+					}
+					if _, ok := m[vc]; !ok {
+						var ver uint64
+						var found bool
+						var cands []string
+						if strings.TrimSpace(vtCol) != "" {
+							cands = append(cands, vtCol)
+						}
+						cands = append(cands, []string{"updated_at", "update_ts", "ts", "event_time", "modified_at", "insert_ts", "created_at"}...)
+						for _, cand := range cands {
+							if v, ok := m[cand]; ok {
+								switch t := v.(type) {
+								case string:
+									if tt, err := time.Parse("2006-01-02 15:04:05", t); err == nil {
+										ver = uint64(tt.UnixNano() / 1e6)
+										found = true
+									}
+								case time.Time:
+									ver = uint64(t.UnixNano() / 1e6)
+									found = true
+								default:
+									fv := fmt.Sprint(v)
+									if tt, err := time.Parse("2006-01-02 15:04:05", fv); err == nil {
+										ver = uint64(tt.UnixNano() / 1e6)
+										found = true
+									}
+								}
+								if found {
+									break
+								}
+							}
+						}
+						if !found {
+							ver = uint64(time.Now().UnixNano() / 1e6)
+						}
+						m[vc] = ver
+					}
+				}
 				var key []byte
 				if keyIndex >= 0 {
 					kv := vals[keyIndex]
@@ -445,6 +654,36 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 			}
 		}
 	}
+	vtColLocal := strings.TrimSpace(versionTimeColumn)
+	if tconf, _ := lookupTableConfig(table); tconf != nil {
+		if strings.TrimSpace(tconf.VersionTimeColumn) != "" {
+			vtColLocal = strings.TrimSpace(tconf.VersionTimeColumn)
+		}
+	}
+	if vtColLocal == "" {
+		var sorting string
+		_ = db.QueryRow("SELECT sorting_key FROM system.tables WHERE database = ? AND name = ?", database, table).Scan(&sorting)
+		if sorting != "" {
+			var cands []string
+			for _, n := range names {
+				if strings.Contains(sorting, n) {
+					cands = append(cands, n)
+				}
+			}
+			cols, _ := clickhouse.GetColumns(db, database, table)
+			typ := map[string]string{}
+			for _, c := range cols {
+				typ[c.Name] = c.Type
+			}
+			for _, cand := range cands {
+				tn := strings.ToLower(typ[cand])
+				if strings.Contains(tn, "date") || strings.Contains(tn, "datetime") {
+					vtColLocal = cand
+					break
+				}
+			}
+		}
+	}
 	type exportBatch struct {
 		msgs       []kprod.Message
 		size       int
@@ -592,6 +831,125 @@ func exportTableToKafka(db *sql.DB, database string, table string, brokers []str
 					m[name] = t.Format("2006-01-02 15:04:05")
 				default:
 					m[name] = v
+				}
+			}
+			eng := strings.ToLower(strings.TrimSpace(mvEngine))
+			if eng == "versioned_collapsing" {
+				sc := strings.TrimSpace(signColumn)
+				if sc == "" {
+					sc = "sign"
+				} else if eng == "replacing" {
+					vc := strings.TrimSpace(versionColumn)
+					if vc != "" {
+						if val, ok := m[vc]; !ok || val == nil || strings.TrimSpace(fmt.Sprint(val)) == "" {
+							var ver uint64
+							var found bool
+							vt := vtColLocal
+							var cands []string
+							if vt != "" {
+								cands = append(cands, vt)
+							}
+							cands = append(cands, []string{"updated_at", "update_ts", "ts", "event_time", "modified_at", "insert_ts", "created_at"}...)
+							for _, cand := range cands {
+								if v, ok := m[cand]; ok {
+									switch t := v.(type) {
+									case string:
+										if tt, err := time.Parse("2006-01-02 15:04:05", t); err == nil {
+											ver = uint64(tt.UnixNano() / 1e6)
+											found = true
+										}
+									case time.Time:
+										ver = uint64(t.UnixNano() / 1e6)
+										found = true
+									default:
+										fv := fmt.Sprint(v)
+										if tt, err := time.Parse("2006-01-02 15:04:05", fv); err == nil {
+											ver = uint64(tt.UnixNano() / 1e6)
+											found = true
+										}
+									}
+									if found {
+										break
+									}
+								}
+							}
+							if !found {
+								ver = uint64(time.Now().UnixNano() / 1e6)
+							}
+							m[vc] = ver
+						}
+					}
+				}
+				vc := strings.TrimSpace(versionColumn)
+				if vc == "" {
+					vc = "version"
+				}
+				if _, ok := m[sc]; !ok {
+					var signVal int8 = 1
+					for _, cand := range []string{"is_deleted", "deleted", "del_flag", "is_delete", "remove_flag"} {
+						if v, ok := m[cand]; ok {
+							switch t := v.(type) {
+							case bool:
+								if t {
+									signVal = -1
+								}
+							case string:
+								s := strings.ToLower(strings.TrimSpace(t))
+								if s == "1" || s == "true" || s == "t" || s == "yes" || s == "y" {
+									signVal = -1
+								}
+							default:
+								fv := fmt.Sprint(v)
+								s := strings.ToLower(strings.TrimSpace(fv))
+								if s == "1" || s == "-1" || s == "true" {
+									if s == "-1" {
+										signVal = -1
+									} else if s == "1" || s == "true" {
+										signVal = -1
+									}
+								}
+							}
+							break
+						}
+					}
+					m[sc] = signVal
+				}
+				if _, ok := m[vc]; !ok {
+					var ver uint64
+					var found bool
+					vt := vtColLocal
+					var cands []string
+					if vt != "" {
+						cands = append(cands, vt)
+					}
+					cands = append(cands, []string{"updated_at", "update_ts", "ts", "event_time", "modified_at", "insert_ts", "created_at"}...)
+					for _, cand := range cands {
+						if v, ok := m[cand]; ok {
+							switch t := v.(type) {
+							case string:
+								if tt, err := time.Parse("2006-01-02 15:04:05", t); err == nil {
+									ver = uint64(tt.UnixNano() / 1e6)
+									found = true
+								}
+							case time.Time:
+								ver = uint64(t.UnixNano() / 1e6)
+								found = true
+							default:
+								fv := fmt.Sprint(v)
+								if tt, err := time.Parse("2006-01-02 15:04:05", fv); err == nil {
+									ver = uint64(tt.UnixNano() / 1e6)
+									found = true
+								}
+							}
+							if found {
+								break
+							}
+						}
+					}
+					if !found {
+						ver = uint64(time.Now().UnixNano() / 1e6)
+					}
+					m[vc] = ver
 				}
 			}
 			var key []byte

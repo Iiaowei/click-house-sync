@@ -33,6 +33,15 @@ type Sync struct {
 	TablesFile       string `mapstructure:"tables_file"`
 	QueueSize        int    `mapstructure:"queue_size"`
 	Writers          int    `mapstructure:"writers"`
+	MVEngine         string `mapstructure:"mv_engine"`
+	MVOrderBy        string `mapstructure:"mv_order_by"`
+	MVPartitionBy    string `mapstructure:"mv_partition_by"`
+	VersionColumn    string `mapstructure:"version_column"`
+	SignColumn       string `mapstructure:"sign_column"`
+	MVTTLDays        int    `mapstructure:"mv_ttl_days"`
+    MVTTLColumn      string `mapstructure:"mv_ttl_column"`
+    VersionTimeColumn string `mapstructure:"version_time_column"`
+    MaxPartitionsPerInsertBlock int `mapstructure:"max_partitions_per_insert_block"`
 }
 
 // Table 描述单表级的覆盖配置（brokers、批量、游标等）。
@@ -50,6 +59,14 @@ type Table struct {
 	CursorColumn     string   `mapstructure:"cursor_column" yaml:"cursor_column" json:"cursor_column"`
 	CursorStart      string   `mapstructure:"cursor_start" yaml:"cursor_start" json:"cursor_start"`
 	CursorEnd        string   `mapstructure:"cursor_end" yaml:"cursor_end" json:"cursor_end"`
+	MVEngine         string   `mapstructure:"mv_engine" yaml:"mv_engine" json:"mv_engine"`
+	MVOrderBy        string   `mapstructure:"mv_order_by" yaml:"mv_order_by" json:"mv_order_by"`
+	MVPartitionBy    string   `mapstructure:"mv_partition_by" yaml:"mv_partition_by" json:"mv_partition_by"`
+	VersionColumn    string   `mapstructure:"version_column" yaml:"version_column" json:"version_column"`
+	SignColumn       string   `mapstructure:"sign_column" yaml:"sign_column" json:"sign_column"`
+	MVTTLDays        int      `mapstructure:"mv_ttl_days" yaml:"mv_ttl_days" json:"mv_ttl_days"`
+    MVTTLColumn      string   `mapstructure:"mv_ttl_column" yaml:"mv_ttl_column" json:"mv_ttl_column"`
+    VersionTimeColumn string   `mapstructure:"version_time_column" yaml:"version_time_column" json:"version_time_column"`
 }
 
 // Logging 控制日志级别/格式以及可选的文件输出。

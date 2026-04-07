@@ -19,19 +19,20 @@ type genTablesFile struct {
 
 // genTableItem 描述写入 tables.yaml 的单表配置。
 type genTableItem struct {
-	Name             string   `yaml:"name"`
-	Brokers          []string `yaml:"brokers"`
-	RowsPerPartition int      `yaml:"rows_per_partition"`
-	BatchSize        int      `yaml:"batch_size"`
-	GroupName        string   `yaml:"group_name"`
-	TargetTable      string   `yaml:"target_table"`
-	TargetDatabase   string   `yaml:"target_database"`
-	CurrentDatabase  string   `yaml:"current_database"`
-	ExportOrderBy    string   `yaml:"export_order_by"`
-	ExportKeyColumn  string   `yaml:"export_key_column"`
-	CursorColumn     string   `yaml:"cursor_column"`
-	CursorStart      string   `yaml:"cursor_start"`
-	CursorEnd        string   `yaml:"cursor_end"`
+	Name              string   `yaml:"name"`
+	Brokers           []string `yaml:"brokers"`
+	RowsPerPartition  int      `yaml:"rows_per_partition"`
+	BatchSize         int      `yaml:"batch_size"`
+	GroupName         string   `yaml:"group_name"`
+	TargetTable       string   `yaml:"target_table"`
+	TargetDatabase    string   `yaml:"target_database"`
+	CurrentDatabase   string   `yaml:"current_database"`
+	ExportOrderBy     string   `yaml:"export_order_by"`
+	ExportKeyColumn   string   `yaml:"export_key_column"`
+	CursorColumn      string   `yaml:"cursor_column"`
+	CursorStart       string   `yaml:"cursor_start"`
+	CursorEnd         string   `yaml:"cursor_end"`
+	VersionTimeColumn string   `yaml:"version_time_column"`
 }
 
 // genTablesCmd 扫描数据库的表并按默认值生成 tables.yaml 框架。
@@ -44,8 +45,6 @@ var genTablesCmd = &cobra.Command{
 		includeViews, _ := cmd.Flags().GetBool("include-views")
 		prefix, _ := cmd.Flags().GetString("prefix")
 		suffix, _ := cmd.Flags().GetString("suffix")
-		_, _ = cmd.Flags().GetString("topic-prefix")
-		_, _ = cmd.Flags().GetString("topic-suffix")
 		exportOrderBy, _ := cmd.Flags().GetString("export-order-by")
 		exportKeyColumn, _ := cmd.Flags().GetString("export-key-column")
 		cursorColumn, _ := cmd.Flags().GetString("cursor-column")
@@ -54,6 +53,7 @@ var genTablesCmd = &cobra.Command{
 		includeColumns, _ := cmd.Flags().GetString("include-columns")
 		excludeColumns, _ := cmd.Flags().GetString("exclude-columns")
 		tablesCSV, _ := cmd.Flags().GetString("tables")
+		versionTime, _ := cmd.Flags().GetString("version-time-column")
 
 		if output == "" {
 			output = "tables.yaml"
@@ -159,19 +159,20 @@ var genTablesCmd = &cobra.Command{
 		var out genTablesFile
 		for _, n := range names {
 			item := genTableItem{
-				Name:             n,
-				Brokers:          brokersList(),
-				RowsPerPartition: rowsPerPartition,
-				BatchSize:        batchSize,
-				GroupName:        groupName + "-" + n,
-				TargetTable:      n,
-				TargetDatabase:   targetDatabase,
-				CurrentDatabase:  chDatabase,
-				ExportOrderBy:    exportOrderBy,
-				ExportKeyColumn:  exportKeyColumn,
-				CursorColumn:     cursorColumn,
-				CursorStart:      cursorStart,
-				CursorEnd:        cursorEnd,
+				Name:              n,
+				Brokers:           brokersList(),
+				RowsPerPartition:  rowsPerPartition,
+				BatchSize:         batchSize,
+				GroupName:         groupName + "-" + n,
+				TargetTable:       n,
+				TargetDatabase:    targetDatabase,
+				CurrentDatabase:   chDatabase,
+				ExportOrderBy:     exportOrderBy,
+				ExportKeyColumn:   exportKeyColumn,
+				CursorColumn:      cursorColumn,
+				CursorStart:       cursorStart,
+				CursorEnd:         cursorEnd,
+				VersionTimeColumn: versionTime,
 			}
 			if item.TargetDatabase == "" {
 				item.TargetDatabase = chDatabase
@@ -201,13 +202,12 @@ func init() {
 	genTablesCmd.Flags().Bool("include-views", false, "包含视图与 Kafka 引擎表")
 	genTablesCmd.Flags().String("prefix", "", "仅包含指定前缀的表名")
 	genTablesCmd.Flags().String("suffix", "", "仅包含指定后缀的表名")
-	genTablesCmd.Flags().String("topic-prefix", "", "为生成的 topic 加前缀（可选）")
-	genTablesCmd.Flags().String("topic-suffix", "", "为生成的 topic 加后缀（可选）")
 	genTablesCmd.Flags().String("export-order-by", "", "默认填充到 tables.yaml 的 export_order_by 字段")
 	genTablesCmd.Flags().String("export-key-column", "", "默认填充到 tables.yaml 的 export_key_column 字段")
 	genTablesCmd.Flags().String("cursor-column", "", "默认填充到 tables.yaml 的 cursor_column 字段")
 	genTablesCmd.Flags().String("cursor-start", "", "默认填充到 tables.yaml 的 cursor_start 字段")
 	genTablesCmd.Flags().String("cursor-end", "", "默认填充到 tables.yaml 的 cursor_end 字段")
+	genTablesCmd.Flags().String("version-time-column", "", "默认填充到 tables.yaml 的 version_time_column 字段")
 	genTablesCmd.Flags().String("include-columns", "", "仅生成包含指定列的表（逗号分隔，全部匹配）")
 	genTablesCmd.Flags().String("exclude-columns", "", "排除包含指定列的表（逗号分隔，任一匹配即排除）")
 	genTablesCmd.Flags().String("tables", "", "仅生成指定表（逗号分隔）")

@@ -157,7 +157,53 @@ var syncCmd = &cobra.Command{
 				_ = clickhouse.DropTableIfExists(db, kafkaDB, "kafka_"+t.Name+"_sink")
 			}
 			// 创建 Kafka 引擎表（字段结构对齐源表）
-			if err := clickhouse.CreateKafkaTableFromSource(db, srcDB, t.Name, kafkaDB, brokers, topic, group, "JSONEachRow", 1, kafkaMaxBlockSize, kafkaAutoOffsetReset); err != nil {
+			// decide MV engine and extras for Kafka sink schema per table
+			eng := mvEngine
+			if strings.TrimSpace(t.MVEngine) != "" {
+				eng = t.MVEngine
+			}
+			mvOrd := mvOrderBy
+			if strings.TrimSpace(t.MVOrderBy) != "" {
+				mvOrd = t.MVOrderBy
+			}
+			mvPart := mvPartitionBy
+			if strings.TrimSpace(t.MVPartitionBy) != "" {
+				mvPart = t.MVPartitionBy
+			}
+			verCol := versionColumn
+			if strings.TrimSpace(t.VersionColumn) != "" {
+				verCol = t.VersionColumn
+			}
+			if strings.ToLower(strings.TrimSpace(eng)) == "replacing" && strings.TrimSpace(verCol) == "" {
+				verCol = "version"
+			}
+			sCol := signColumn
+			if strings.TrimSpace(t.SignColumn) != "" {
+				sCol = t.SignColumn
+			}
+			extras := map[string]string{}
+			switch strings.ToLower(strings.TrimSpace(eng)) {
+			case "replacing":
+				if strings.TrimSpace(verCol) != "" {
+					extras[verCol] = "UInt64"
+				}
+			case "collapsing":
+				if strings.TrimSpace(sCol) != "" {
+					extras[sCol] = "Int8"
+				}
+			case "versioned_collapsing":
+				if strings.TrimSpace(sCol) != "" {
+					extras[sCol] = "Int8"
+				} else {
+					extras["sign"] = "Int8"
+				}
+				if strings.TrimSpace(verCol) != "" {
+					extras[verCol] = "UInt64"
+				} else {
+					extras["version"] = "UInt64"
+				}
+			}
+			if err := clickhouse.CreateKafkaTableFromSource(db, srcDB, t.Name, kafkaDB, brokers, topic, group, "JSONEachRow", 1, kafkaMaxBlockSize, kafkaAutoOffsetReset, extras); err != nil {
 				results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
 				if continueOnError {
 					continue
@@ -167,6 +213,22 @@ var syncCmd = &cobra.Command{
 			typeDiffs := []clickhouse.TypeDiff{}
 			if sourceMVToKafka {
 				if err := clickhouse.CreateMaterializedViewToKafka(db, srcDB, t.Name, kafkaDB); err != nil {
+					results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
+					if continueOnError {
+						continue
+					}
+					return err
+				}
+			} else if queryableMV {
+				td := mvTTLDays
+				tc := mvTTLColumn
+				if t.MVTTLDays > 0 {
+					td = t.MVTTLDays
+				}
+				if strings.TrimSpace(t.MVTTLColumn) != "" {
+					tc = t.MVTTLColumn
+				}
+				if err := clickhouse.CreateMaterializedViewOwn(db, kafkaDB, srcDB, t.Name, tgtDB, eng, mvOrd, mvPart, verCol, sCol, td, tc, mvMaxPartitionsPerInsertBlock); err != nil {
 					results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
 					if continueOnError {
 						continue
@@ -198,22 +260,12 @@ var syncCmd = &cobra.Command{
 					return err
 				}
 				typeDiffs = clickhouse.AnalyzeTypeDiff(sourceCols, targetCols)
-				if queryableMV {
-					if err := clickhouse.CreateMaterializedViewOwn(db, kafkaDB, srcDB, t.Name, tgtDB); err != nil {
-						results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
-						if continueOnError {
-							continue
-						}
-						return err
+				if err := clickhouse.CreateMaterializedView(db, kafkaDB, t.Name, tgtDB, tgtTable); err != nil {
+					results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
+					if continueOnError {
+						continue
 					}
-				} else {
-					if err := clickhouse.CreateMaterializedView(db, kafkaDB, t.Name, tgtDB, tgtTable); err != nil {
-						results = append(results, map[string]any{"table": t.Name, "error": err.Error()})
-						if continueOnError {
-							continue
-						}
-						return err
-					}
+					return err
 				}
 			}
 			if !prepareOnly {
@@ -237,6 +289,16 @@ var syncCmd = &cobra.Command{
 				}
 				if strings.TrimSpace(t.CursorEnd) != "" {
 					curEnd = t.CursorEnd
+				}
+				vtCol := strings.TrimSpace(versionTimeColumn)
+				if strings.TrimSpace(t.VersionTimeColumn) != "" {
+					vtCol = strings.TrimSpace(t.VersionTimeColumn)
+				}
+				if strings.TrimSpace(curCol) == "" && strings.TrimSpace(vtCol) != "" {
+					curCol = vtCol
+				}
+				if strings.TrimSpace(ord) == "" && strings.TrimSpace(vtCol) != "" {
+					ord = vtCol
 				}
 				if cursorStartFromTarget && strings.TrimSpace(curCol) != "" {
 					var src string

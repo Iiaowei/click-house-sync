@@ -2,10 +2,11 @@
 package kafka
 
 import (
-	"context"
-	"encoding/json"
-	"strings"
-	"time"
+    "context"
+    "encoding/json"
+    "math"
+    "strings"
+    "time"
 
 	k "github.com/segmentio/kafka-go"
 )
@@ -27,11 +28,23 @@ func NewWriter(brokers []string, topic string, batchSize int) *k.Writer {
 
 // MessageFromMap 将 map 编码为 JSONEachRow 并生成 Kafka 消息。
 func MessageFromMap(m map[string]any, key []byte) (k.Message, error) {
-	b, err := json.Marshal(m)
-	if err != nil {
-		return k.Message{}, err
-	}
-	return k.Message{Key: key, Value: b}, nil
+    for k2, v := range m {
+        switch t := v.(type) {
+        case float32:
+            if math.IsNaN(float64(t)) || math.IsInf(float64(t), 0) {
+                m[k2] = float32(0)
+            }
+        case float64:
+            if math.IsNaN(t) || math.IsInf(t, 0) {
+                m[k2] = float64(0)
+            }
+        }
+    }
+    b, err := json.Marshal(m)
+    if err != nil {
+        return k.Message{}, err
+    }
+    return k.Message{Key: key, Value: b}, nil
 }
 
 // WriteBatch 一次性写入一批消息到 Kafka。
