@@ -7,6 +7,7 @@
 - 默认优化：查询型 MV 的分区策略改进——优先按时间月分区（自动探测时间列）；当未找到时间列时默认 `PARTITION BY tuple()`，不再回退源表分区键，避免高基数分区导致插入失败。
 - 默认优化：查询型 MV 的 SELECT 追加 `max_partitions_per_insert_block=10000`，降低“单块分区过多”报错概率。
 - 新增：提供参数 `--max-partitions-per-insert-block`（配置文件键 `sync.max_partitions_per_insert_block`），用于配置查询型物化视图的单块分区上限（默认 1000）。
+- 更新：`docker-compose` 流水线示例补充同步性能与稳定性参数：`--writers 4`、`--queue-size 200`、`--kafka-auto-offset-reset skip`、`--kafka-max-block-size 700`、`--max-partitions-per-insert-block 10000`，并在 prepare 阶段增加 `--recreate-topic`。
 
 ## 2025-12-10
 
