@@ -119,12 +119,12 @@ services:
       - |
         set -euo pipefail
         mkdir -p /workspace/out
-        ch-sync --ch-host ck-source --ch-port 9000 --ch-user default --ch-database demo gen-ddl --ddl-database demo --output /workspace/out/demo_tables.sql
-        ch-sync --ch-host ck-target --ch-port 9000 --ch-user default --ch-database demo exec-ddl --file /workspace/out/demo_tables.sql --continue-on-error
-        ch-sync --ch-host ck-source --ch-port 9000 --ch-user default --ch-database demo --kafka-brokers kafka:9092 --target-database demo gen-tables --output /workspace/out/tables.yaml --include-columns created_at --cursor-column created_at --cursor-start "1970-01-01 00:00:00"
-        ch-sync --ch-host ck-target --ch-port 9000 --ch-user default --ch-database demo --target-database demo --kafka-database demo_stream --kafka-brokers kafka:9092 --kafka-auto-offset-reset skip --kafka-max-block-size 700 --max-partitions-per-insert-block 10000 sync --tables-file /workspace/out/tables.yaml --prepare-only --recreate --recreate-topic
-        ch-sync --ch-host ck-source --ch-port 9000 --ch-user default --ch-database demo --target-database demo --kafka-database demo_stream --kafka-brokers kafka:9092 --writers 4 --queue-size 200 --kafka-auto-offset-reset skip --kafka-max-block-size 700 --max-partitions-per-insert-block 10000 sync --tables-file /workspace/out/tables.yaml --full-export --continue-on-error --source-mv-to-kafka
-        ch-sync --ch-host ck-source --ch-port 9000 --ch-user default --ch-database demo schema-diff-batch --tables-file /workspace/out/tables.yaml --target-host ck-target --target-port 9000 --target-db demo > /workspace/out/schema_diff_summary.json
+        ch-sync gen-ddl --output /workspace/out/demo_tables.sql
+        ch-sync --ch-host ck-target exec-ddl --file /workspace/out/demo_tables.sql --continue-on-error
+        ch-sync gen-tables --output /workspace/out/tables.yaml --include-columns created_at --cursor-column created_at --cursor-start "1970-01-01 00:00:00"
+        ch-sync --ch-host ck-target sync --kafka-database demo_stream --prepare-only --recreate
+        ch-sync sync --kafka-database demo_stream --full-export --continue-on-error --source-mv-to-kafka
+        ch-sync schema-diff-batch --target-host ck-target > /workspace/out/schema_diff_summary.json
         date -u +"%Y-%m-%dT%H:%M:%SZ" > /workspace/out/pipeline.done
         tail -f /dev/null
 
